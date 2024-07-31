@@ -107,7 +107,7 @@ def compare_dataframes(df1, df2):
     return changes
 
 def main():
-    st.title('KB손해보험 상품 비교 서비스')
+    st.title('KB손해보험 상품 개정 자동화 서비스')
 
     url = st.text_input('KB손해보험 URL', 'https://www.kbinsure.co.kr/CG302130001.ec')
 
