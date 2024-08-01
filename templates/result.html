@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>스크래핑 결과</title>
+    <style>
+        table.data {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        table.data td, table.data th {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        table.data tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>스크래핑 결과</h1>
+    <h2>상품명: {{ product_name }}</h2>
+    <h3>보장내용:</h3>
+    <p>{{ coverage }}</p>
+    <h3>보험기간: {{ period }}</h3>
+    <h3>테이블 데이터:</h3>
+    {{ table_html|safe }}
+    <h3>디버그: 전체 HTML</h3>
+    <pre><code>{{ html_content }}</code></pre>
+    <a href="/">다시 검색하기</a>
+</body>
+</html>
