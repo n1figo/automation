@@ -1,18 +1,21 @@
 import streamlit as st
-from requests_html import HTMLSession
+from requests_html import AsyncHTMLSession
 import pandas as pd
+import asyncio
 
-def scrape_kb_insurance(url):
-    session = HTMLSession()
-    r = session.get(url)
-    r.html.render(sleep=5, keep_page=True, scrolldown=1)  # JavaScript 렌더링
+async def scrape_kb_insurance(url):
+    asession = AsyncHTMLSession()
+    r = await asession.get(url)
+    await r.html.arender(sleep=5, keep_page=True, scrolldown=1)  # JavaScript 렌더링
 
     try:
         # 상품명 추출
-        product_name = r.html.find('h2.h3AreaBtn', first=True).text
+        product_name_element = r.html.find('h2.h3AreaBtn', first=True)
+        product_name = product_name_element.text if product_name_element else "상품명을 찾을 수 없습니다"
 
         # 보장내용 추출
-        coverage = r.html.find('div.leftBox', first=True).text
+        coverage_element = r.html.find('div.leftBox', first=True)
+        coverage = coverage_element.text if coverage_element else "보장내용을 찾을 수 없습니다"
 
         # 보험기간 추출
         period_element = r.html.xpath("//th[contains(text(), '보험기간')]/following-sibling::td", first=True)
@@ -37,7 +40,12 @@ def scrape_kb_insurance(url):
     except Exception as e:
         return {"error": f"데이터 추출 중 오류 발생: {str(e)}"}
     finally:
-        session.close()
+        await asession.close()
+
+def run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 def main():
     st.title('KB손해보험 웹 스크래핑 테스트 (requests-html)')
@@ -46,7 +54,7 @@ def main():
     
     if st.button('데이터 가져오기'):
         with st.spinner('데이터를 가져오는 중... (약 10-15초 소요될 수 있습니다)'):
-            result = scrape_kb_insurance(url)
+            result = run_async(scrape_kb_insurance(url))
             
             if "error" in result:
                 st.error(result["error"])
