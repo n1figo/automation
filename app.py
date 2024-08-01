@@ -51,6 +51,9 @@ def scrape_kb_insurance(url):
             "보험기간": period,
             "테이블 데이터": table_data,
             "html_content": page_source
+
+
+            
         }
     finally:
         browser.close()
