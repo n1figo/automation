@@ -19,3 +19,4 @@ requests
 streamlit
 selenium
 webdriver-manager
+playwright
