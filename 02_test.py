@@ -107,7 +107,7 @@ def compare_dataframes(df1, df2):
     return changes
 
 def main():
-    st.title('KB손해보험 상품 개정 자동화 서비스')
+    st.title('상품 개정 자동화 서비스')
 
     url = st.text_input('KB손해보험 URL', 'https://www.kbinsure.co.kr/CG302130001.ec')
 
@@ -125,7 +125,7 @@ def main():
     if uploaded_file is not None:
         hwp_data = parse_hwp_content(uploaded_file)
         if hwp_data is not None:
-            st.subheader('HWP 파일 상품 정보')
+            st.subheader('HWP 파일 요약서 수정된 부분')
             st.dataframe(hwp_data)
 
             if 'web_data' in st.session_state:
