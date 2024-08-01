@@ -11,11 +11,18 @@ import os
 
 def scrape_kb_insurance(url):
     try:
-        response = requests.get(url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()  # Raises an HTTPError for bad responses
+        
         soup = BeautifulSoup(response.content, 'html.parser')
         table = soup.find('table', class_='tbl_ty03')
         
         if not table:
+            st.error("웹페이지에서 상품 테이블을 찾을 수 없습니다. 웹사이트 구조가 변경되었을 수 있습니다.")
             return None
 
         data = []
@@ -30,10 +37,17 @@ def scrape_kb_insurance(url):
                     cols[3].text.strip()   # 보험기간
                 ])
         
+        if not data:
+            st.warning("상품 정보를 추출할 수 없습니다. 데이터가 비어 있습니다.")
+            return None
+        
         return pd.DataFrame(data, columns=['상품명', '보장내용', '가입대상', '보험기간'])
+    except requests.RequestException as e:
+        st.error(f"웹 요청 중 오류 발생: {str(e)}")
     except Exception as e:
-        st.error(f"웹 스크래핑 중 오류 발생: {str(e)}")
-        return None
+        st.error(f"데이터 처리 중 오류 발생: {str(e)}")
+    
+    return None
 
 def parse_hwp_content(file):
     try:
