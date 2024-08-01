@@ -1,13 +1,12 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from PIL import Image
 import time
 import io
+import os
 
 def capture_full_page(url, max_retries=3):
     chrome_options = Options()
@@ -16,12 +15,13 @@ def capture_full_page(url, max_retries=3):
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-
-    service = Service(ChromeDriverManager().install())
+    
+    # Codespace 환경에서 Chromium 사용
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
 
     for attempt in range(max_retries):
         try:
-            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver = webdriver.Chrome(options=chrome_options)
             driver.get(url)
 
             # 명시적 대기 추가
@@ -65,4 +65,8 @@ def capture_full_page(url, max_retries=3):
             time.sleep(5)  # 재시도 전 5초 대기
 
 def save_image(image, filename):
-    image.save(f"output/images/{filename}")
+    # 출력 디렉토리 확인 및 생성
+    output_dir = "output/images"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    image.save(os.path.join(output_dir, filename))
