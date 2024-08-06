@@ -1,5 +1,4 @@
 import os
-import subprocess
 from flask import Flask, render_template, request, send_file
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
@@ -7,21 +6,19 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import PatternFill
 import pandas as pd
 import io
-import olefile
-import zlib
-import struct
 import torch
 from transformers import AutoProcessor, AutoModel
 from PIL import Image
 from werkzeug.utils import secure_filename
 import time
 from pdf2image import convert_from_path
+import PyPDF2
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads/'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 
-ALLOWED_EXTENSIONS = {'hwp'}
+ALLOWED_EXTENSIONS = {'pdf'}
 
 # Create uploads directory if it doesn't exist
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
@@ -50,76 +47,17 @@ def capture_full_page(url):
         browser.close()
         playwright.stop()
 
-def process_hwp_file(filepath):
+def process_pdf_file(filepath):
     extracted_text = []
-    with olefile.OleFileIO(filepath) as ole:
-        for stream in ole.listdir():
-            if stream[-1] == 'BinData':
-                continue
-            
-            try:
-                encoded_data = ole.openstream(stream).read()
-                
-                # Try different decompression methods
-                try:
-                    decompressed = zlib.decompress(encoded_data, -15)
-                except zlib.error:
-                    try:
-                        decompressed = zlib.decompress(encoded_data)
-                    except zlib.error:
-                        print(f"Failed to decompress stream {stream}")
-                        continue
-                
-                i = 0
-                size = len(decompressed)
-                while i < size:
-                    header = struct.unpack('<I', decompressed[i:i+4])[0]
-                    rec_type = header & 0x3ff
-                    rec_len = (header >> 20) & 0xfff
-                    
-                    if rec_type == 67:  # Text record
-                        rec_data = decompressed[i+4:i+4+rec_len]
-                        try:
-                            text = rec_data.decode('utf-16')
-                            extracted_text.append(text)
-                        except UnicodeDecodeError:
-                            print(f"Failed to decode text in stream {stream}")
-                    
-                    i += 4 + rec_len
-            except Exception as e:
-                print(f"Error processing stream {stream}: {str(e)}")
-                continue
-
+    with open(filepath, 'rb') as file:
+        pdf_reader = PyPDF2.PdfReader(file)
+        for page in pdf_reader.pages:
+            extracted_text.append(page.extract_text())
     return ' '.join(extracted_text)
-
-def hwp_to_pdf(hwp_path, pdf_path):
-    try:
-        subprocess.run(['unoconv', '-f', 'pdf', '-o', pdf_path, hwp_path], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error converting HWP to PDF: {e}")
-        return False
-    except FileNotFoundError:
-        print("unoconv not found. Please install unoconv.")
-        return False
-    return True
 
 def pdf_to_image(pdf_path, output_path):
     images = convert_from_path(pdf_path)
     images[0].save(output_path, 'PNG')
-
-def hwp_to_image(hwp_path, output_path):
-    pdf_path = hwp_path.replace('.hwp', '.pdf')
-    if hwp_to_pdf(hwp_path, pdf_path):
-        try:
-            pdf_to_image(pdf_path, output_path)
-            os.remove(pdf_path)  # Remove the temporary PDF file
-            return True
-        except Exception as e:
-            print(f"Error converting PDF to image: {e}")
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-            return False
-    return False
 
 def detect_highlights(image_path):
     image = Image.open(image_path)
@@ -156,7 +94,7 @@ def detect_highlights(image_path):
     
     return highlighted_sections
 
-def create_excel_with_data(image_path, excel_filename, data, hwp_text, highlighted_sections):
+def create_excel_with_data(image_path, excel_filename, data, pdf_text, highlighted_sections):
     wb = Workbook()
     ws = wb.active
     
@@ -179,9 +117,9 @@ def create_excel_with_data(image_path, excel_filename, data, hwp_text, highlight
         table_df = pd.DataFrame(data['테이블 데이터'])
         table_df.to_excel(ws, startrow=ws.max_row + 2, index=False)
     
-    # Add HWP text and highlight information
-    ws.cell(row=ws.max_row + 2, column=1, value="HWP 내용")
-    ws.cell(row=ws.max_row + 1, column=1, value=hwp_text)
+    # Add PDF text and highlight information
+    ws.cell(row=ws.max_row + 2, column=1, value="PDF 내용")
+    ws.cell(row=ws.max_row + 1, column=1, value=pdf_text)
     
     ws.cell(row=ws.max_row + 2, column=1, value="하이라이트된 섹션")
     for i, section in enumerate(highlighted_sections):
@@ -238,7 +176,7 @@ def index():
             '테이블 데이터': [{'Column1': 'Value1', 'Column2': 'Value2'}]
         }
         
-        hwp_text = ""
+        pdf_text = ""
         highlighted_sections = []
         
         if 'file' in request.files:
@@ -253,23 +191,22 @@ def index():
                     
                     file.save(filepath)
                     
-                    hwp_text = process_hwp_file(filepath)
+                    pdf_text = process_pdf_file(filepath)
                     
-                    # Convert HWP to image
-                    hwp_image_path = filepath.replace('.hwp', '.png')
-                    if hwp_to_image(filepath, hwp_image_path):
-                        highlighted_sections = detect_highlights(hwp_image_path)
-                        
-                        # Clean up temporary files
-                        os.remove(filepath)
-                        os.remove(hwp_image_path)
-                    else:
-                        return "Error processing HWP file. Please try again.", 500
+                    # Convert PDF to image
+                    pdf_image_path = filepath.replace('.pdf', '.png')
+                    pdf_to_image(filepath, pdf_image_path)
+                    
+                    highlighted_sections = detect_highlights(pdf_image_path)
+                    
+                    # Clean up temporary files
+                    os.remove(filepath)
+                    os.remove(pdf_image_path)
                 else:
-                    return "Invalid file type. Please upload only HWP files.", 400
+                    return "Invalid file type. Please upload only PDF files.", 400
         
         excel_filename = "output.xlsx"
-        excel_path = create_excel_with_data(image_path, excel_filename, data, hwp_text, highlighted_sections)
+        excel_path = create_excel_with_data(image_path, excel_filename, data, pdf_text, highlighted_sections)
         return send_file(excel_path, as_attachment=True)
 
     return render_template('index.html')
