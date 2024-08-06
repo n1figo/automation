@@ -5,12 +5,9 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import PatternFill
 import pandas as pd
-import io
 import torch
 from transformers import AutoProcessor, AutoModel
 from PIL import Image
-from werkzeug.utils import secure_filename
-import time
 import PyPDF2
 import fitz  # PyMuPDF
 
@@ -97,7 +94,54 @@ def detect_highlights(image_path):
     
     return highlighted_sections
 
-# ... (rest of the code remains the same)
+def create_excel_with_data(image_path, excel_filename, data, pdf_text, highlighted_sections):
+    wb = Workbook()
+    ws = wb.active
+    
+    img = XLImage(image_path)
+    img.width = 800
+    img.height = 600
+    
+    ws.add_image(img, 'A1')
+    
+    # Add scraped data
+    info_df = pd.DataFrame([
+        ['상품명', data.get('상품명', '')],
+        ['보장내용', data.get('보장내용', '')],
+        ['보험기간', data.get('보험기간', '')]
+    ])
+    info_df.to_excel(ws, startrow=ws.max_row + 2, index=False, header=False)
+    
+    # Add table data
+    if data.get('테이블 데이터'):
+        table_df = pd.DataFrame(data['테이블 데이터'])
+        table_df.to_excel(ws, startrow=ws.max_row + 2, index=False)
+    
+    # Add PDF text and highlight information
+    ws.cell(row=ws.max_row + 2, column=1, value="PDF 내용")
+    ws.cell(row=ws.max_row + 1, column=1, value=pdf_text)
+    
+    ws.cell(row=ws.max_row + 2, column=1, value="하이라이트된 섹션")
+    for i, section in enumerate(highlighted_sections):
+        ws.cell(row=ws.max_row + 1, column=1, value=f"섹션 {section}")
+    
+    # Highlight sections
+    yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+    for section in highlighted_sections:
+        cell = ws.cell(row=ws.max_row - len(highlighted_sections) + section + 1, column=1)
+        cell.fill = yellow_fill
+    
+    output_dir = 'output/excel'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    excel_path = os.path.join(output_dir, excel_filename)
+    wb.save(excel_path)
+    return excel_path
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -119,29 +163,28 @@ def index():
         
         if 'file' in request.files:
             file = request.files['file']
-            if file and file.filename:
-                filename = secure_file_name(file.filename)
-                if filename:
-                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                    
-                    # Ensure the directory exists before saving the file
-                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                    
-                    file.save(filepath)
-                    
-                    pdf_text = process_pdf_file(filepath)
-                    
-                    # Convert PDF to image
-                    pdf_image_path = filepath.replace('.pdf', '.png')
-                    pdf_to_image(filepath, pdf_image_path)
-                    
-                    highlighted_sections = detect_highlights(pdf_image_path)
-                    
-                    # Clean up temporary files
-                    os.remove(filepath)
-                    os.remove(pdf_image_path)
-                else:
-                    return "Invalid file type. Please upload only PDF files.", 400
+            if file and file.filename and allowed_file(file.filename):
+                filename = file.filename
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                
+                # Ensure the directory exists before saving the file
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                
+                file.save(filepath)
+                
+                pdf_text = process_pdf_file(filepath)
+                
+                # Convert PDF to image
+                pdf_image_path = filepath.replace('.pdf', '.png')
+                pdf_to_image(filepath, pdf_image_path)
+                
+                highlighted_sections = detect_highlights(pdf_image_path)
+                
+                # Clean up temporary files
+                os.remove(filepath)
+                os.remove(pdf_image_path)
+            else:
+                return "Invalid file type. Please upload only PDF files.", 400
         
         excel_filename = "output.xlsx"
         excel_path = create_excel_with_data(image_path, excel_filename, data, pdf_text, highlighted_sections)
