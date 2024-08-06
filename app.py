@@ -35,6 +35,8 @@ def create_excel_with_image(image_path, excel_filename):
     
     ws.add_image(img, 'A1')
     
+
+    
     output_dir = 'output/excel'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
