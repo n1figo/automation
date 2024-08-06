@@ -1,11 +1,11 @@
+import os
 from flask import Flask, render_template, request, send_file
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import PatternFill
-import os
-import io
 import pandas as pd
+import io
 import olefile
 import zlib
 import struct
@@ -13,9 +13,17 @@ import torch
 from transformers import AutoProcessor, AutoModel
 from PIL import Image
 from werkzeug.utils import secure_filename
+import time
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads/'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
+
+ALLOWED_EXTENSIONS = {'hwp'}
+
+# Create uploads directory if it doesn't exist
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
 
 # CLIP model and processor loading
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
@@ -146,6 +154,28 @@ def create_excel_with_data(image_path, excel_filename, data, hwp_text, highlight
     wb.save(excel_path)
     return excel_path
 
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def secure_file_name(filename):
+    # Step 1: Use secure_filename
+    secure_name = secure_filename(filename)
+    
+    # Step 2: Check for allowed extensions
+    if not allowed_file(secure_name):
+        return None
+    
+    # Step 3: Limit filename length (e.g., to 50 characters)
+    name, ext = os.path.splitext(secure_name)
+    secure_name = name[:50] + ext
+    
+    # Step 4 & 5: Add timestamp to ensure uniqueness
+    timestamp = int(time.time())
+    final_name = f"{timestamp}_{secure_name}"
+    
+    return final_name
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -166,18 +196,25 @@ def index():
         
         if 'file' in request.files:
             file = request.files['file']
-            if file and file.filename.endswith('.hwp'):
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(filepath)
-                
-                hwp_text = process_hwp_file(filepath)
-                
-                # Note: HWP to image conversion is not implemented here
-                # You need to implement this part separately
-                hwp_image_path = filepath  # This should be the path to the converted image
-                
-                highlighted_sections = detect_highlights(hwp_image_path)
+            if file and file.filename:
+                filename = secure_file_name(file.filename)
+                if filename:
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    
+                    # Ensure the directory exists before saving the file
+                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                    
+                    file.save(filepath)
+                    
+                    hwp_text = process_hwp_file(filepath)
+                    
+                    # Note: HWP to image conversion is not implemented here
+                    # You need to implement this part separately
+                    hwp_image_path = filepath  # This should be the path to the converted image
+                    
+                    highlighted_sections = detect_highlights(hwp_image_path)
+                else:
+                    return "Invalid file type. Please upload only HWP files.", 400
         
         excel_filename = "output.xlsx"
         excel_path = create_excel_with_data(image_path, excel_filename, data, hwp_text, highlighted_sections)
