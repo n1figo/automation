@@ -9,6 +9,7 @@ from transformers import AutoProcessor, AutoModel
 from PIL import Image
 import PyPDF2
 import fitz  # PyMuPDF
+import io
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads/'
@@ -43,33 +44,26 @@ def capture_full_page(url):
         browser.close()
         playwright.stop()
 
-def process_pdf_file(filepath):
-    extracted_text = []
-    with open(filepath, 'rb') as file:
-        pdf_reader = PyPDF2.PdfReader(file)
-        for page in pdf_reader.pages:
-            extracted_text.append(page.extract_text())
-    return ' '.join(extracted_text)
-
-def pdf_to_image(pdf_path, output_path):
+def pdf_to_images(pdf_path):
     doc = fitz.open(pdf_path)
-    page = doc.load_page(0)  # Load the first page
-    pix = page.get_pixmap()
-    pix.save(output_path)
+    images = []
+    for page in doc:
+        pix = page.get_pixmap()
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
     doc.close()
+    return images
 
-def detect_highlights(image_path):
-    image = Image.open(image_path)
-    
+def detect_highlights(image):
     width, height = image.size
     sections = []
     for i in range(0, height, 100):
         for j in range(0, width, 100):
             section = image.crop((j, i, j+100, i+100))
-            sections.append(section)
+            sections.append((section, (j, i, j+100, i+100)))
     
     section_features = []
-    for section in sections:
+    for section, _ in sections:
         inputs = processor(images=section, return_tensors="pt")
         with torch.no_grad():
             features = model.get_image_features(**inputs)
@@ -88,12 +82,12 @@ def detect_highlights(image_path):
         for text_feature in text_features:
             similarity = torch.nn.functional.cosine_similarity(section_feature, text_feature)
             if similarity > 0.5:  # Threshold
-                highlighted_sections.append(i)
+                highlighted_sections.append(sections[i][1])
                 break
     
     return highlighted_sections
 
-def create_excel_with_data(image_path, excel_filename, data, pdf_text, highlighted_sections):
+def create_excel_with_highlights(image_path, excel_filename, data, highlighted_sections):
     wb = Workbook()
     ws = wb.active
     
@@ -121,19 +115,20 @@ def create_excel_with_data(image_path, excel_filename, data, pdf_text, highlight
         for row in table_data:
             ws.append([row.get(header, '') for header in headers])
     
-    # Add PDF text and highlight information
-    ws.cell(row=ws.max_row + 2, column=1, value="PDF 내용")
-    ws.cell(row=ws.max_row + 1, column=1, value=pdf_text)
-    
+    # Add highlighted sections
     ws.cell(row=ws.max_row + 2, column=1, value="하이라이트된 섹션")
     for i, section in enumerate(highlighted_sections):
-        ws.cell(row=ws.max_row + 1, column=1, value=f"섹션 {section}")
-    
-    # Highlight sections
-    yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-    for section in highlighted_sections:
-        cell = ws.cell(row=ws.max_row - len(highlighted_sections) + section + 1, column=1)
-        cell.fill = yellow_fill
+        img = Image.open(image_path)
+        highlight = img.crop(section)
+        
+        # Save highlight as image
+        with io.BytesIO() as output:
+            highlight.save(output, format="PNG")
+            highlight_image = XLImage(output)
+        
+        # Add highlight image to Excel
+        ws.add_image(highlight_image, f'A{ws.max_row + 1}')
+        ws.row_dimensions[ws.max_row].height = 75  # Adjust row height
     
     output_dir = 'output/excel'
     if not os.path.exists(output_dir):
@@ -162,7 +157,6 @@ def index():
             '테이블 데이터': [{'Column1': 'Value1', 'Column2': 'Value2'}]
         }
         
-        pdf_text = ""
         highlighted_sections = []
         
         if 'file' in request.files:
@@ -176,22 +170,18 @@ def index():
                 
                 file.save(filepath)
                 
-                pdf_text = process_pdf_file(filepath)
-                
-                # Convert PDF to image
-                pdf_image_path = filepath.replace('.pdf', '.png')
-                pdf_to_image(filepath, pdf_image_path)
-                
-                highlighted_sections = detect_highlights(pdf_image_path)
+                # Process PDF and detect highlights
+                pdf_images = pdf_to_images(filepath)
+                for img in pdf_images:
+                    highlighted_sections.extend(detect_highlights(img))
                 
                 # Clean up temporary files
                 os.remove(filepath)
-                os.remove(pdf_image_path)
             else:
                 return "Invalid file type. Please upload only PDF files.", 400
         
         excel_filename = "output.xlsx"
-        excel_path = create_excel_with_data(image_path, excel_filename, data, pdf_text, highlighted_sections)
+        excel_path = create_excel_with_highlights(image_path, excel_filename, data, highlighted_sections)
         return send_file(excel_path, as_attachment=True)
 
     return render_template('index.html')
