@@ -1,16 +1,56 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>상품개정 자동화 서비스</title>
+    <title>웹 페이지 캡처 및 HWP 처리</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        form {
+            background: #f4f4f4;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        input[type="submit"] {
+            background: #333;
+            color: #fff;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        input[type="submit"]:hover {
+            background: #555;
+        }
+    </style>
 </head>
 <body>
-    <h1>상품개정 자동화 서비스</h1>
-    <form method="POST">
-        <label for="url">KB 손해보험 URL을 입력하세요:</label><br>
-        <input type="text" id="url" name="url" value="https://www.kbinsure.co.kr/CG302130001.ec" style="width: 300px;"><br>
-        <input type="submit" value="데이터 가져오기">
+    <h1>웹 페이지 캡처 및 HWP 처리</h1>
+    <form action="/" method="post" enctype="multipart/form-data">
+        <label for="url">웹 페이지 URL:</label>
+        <input type="text" id="url" name="url" required>
+        
+        <label for="hwp_file">HWP 파일 (선택사항):</label>
+        <input type="file" id="hwp_file" name="file" accept=".hwp">
+        
+        <input type="submit" value="제출">
     </form>
 </body>
 </html>
