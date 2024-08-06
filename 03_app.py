@@ -1,4 +1,5 @@
 import os
+import subprocess
 from flask import Flask, render_template, request, send_file
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
@@ -14,6 +15,7 @@ from transformers import AutoProcessor, AutoModel
 from PIL import Image
 from werkzeug.utils import secure_filename
 import time
+from pdf2image import convert_from_path
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads/'
@@ -89,6 +91,22 @@ def process_hwp_file(filepath):
                 continue
 
     return ' '.join(extracted_text)
+
+def hwp_to_pdf(hwp_path, pdf_path):
+    # 이 부분은 시스템에 따라 다를 수 있습니다.
+    # 예: Windows에서 한컴오피스 설치 경로
+    hwp_converter = r"C:\Program Files (x86)\Hnc\Office2020\Hwp2Pdf.exe"
+    subprocess.run([hwp_converter, hwp_path, pdf_path])
+
+def pdf_to_image(pdf_path, output_path):
+    images = convert_from_path(pdf_path)
+    images[0].save(output_path, 'PNG')
+
+def hwp_to_image(hwp_path, output_path):
+    pdf_path = hwp_path.replace('.hwp', '.pdf')
+    hwp_to_pdf(hwp_path, pdf_path)
+    pdf_to_image(pdf_path, output_path)
+    os.remove(pdf_path)  # Remove the temporary PDF file
 
 def detect_highlights(image_path):
     image = Image.open(image_path)
@@ -224,11 +242,15 @@ def index():
                     
                     hwp_text = process_hwp_file(filepath)
                     
-                    # Note: HWP to image conversion is not implemented here
-                    # You need to implement this part separately
-                    hwp_image_path = filepath  # This should be the path to the converted image
+                    # Convert HWP to image
+                    hwp_image_path = filepath.replace('.hwp', '.png')
+                    hwp_to_image(filepath, hwp_image_path)
                     
                     highlighted_sections = detect_highlights(hwp_image_path)
+                    
+                    # Clean up temporary files
+                    os.remove(filepath)
+                    os.remove(hwp_image_path)
                 else:
                     return "Invalid file type. Please upload only HWP files.", 400
         
