@@ -93,10 +93,15 @@ def process_hwp_file(filepath):
     return ' '.join(extracted_text)
 
 def hwp_to_pdf(hwp_path, pdf_path):
-    # 이 부분은 시스템에 따라 다를 수 있습니다.
-    # 예: Windows에서 한컴오피스 설치 경로
-    hwp_converter = r"C:\Program Files (x86)\Hnc\Office2020\Hwp2Pdf.exe"
-    subprocess.run([hwp_converter, hwp_path, pdf_path])
+    try:
+        subprocess.run(['unoconv', '-f', 'pdf', '-o', pdf_path, hwp_path], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error converting HWP to PDF: {e}")
+        return False
+    except FileNotFoundError:
+        print("unoconv not found. Please install unoconv.")
+        return False
+    return True
 
 def pdf_to_image(pdf_path, output_path):
     images = convert_from_path(pdf_path)
@@ -104,9 +109,17 @@ def pdf_to_image(pdf_path, output_path):
 
 def hwp_to_image(hwp_path, output_path):
     pdf_path = hwp_path.replace('.hwp', '.pdf')
-    hwp_to_pdf(hwp_path, pdf_path)
-    pdf_to_image(pdf_path, output_path)
-    os.remove(pdf_path)  # Remove the temporary PDF file
+    if hwp_to_pdf(hwp_path, pdf_path):
+        try:
+            pdf_to_image(pdf_path, output_path)
+            os.remove(pdf_path)  # Remove the temporary PDF file
+            return True
+        except Exception as e:
+            print(f"Error converting PDF to image: {e}")
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            return False
+    return False
 
 def detect_highlights(image_path):
     image = Image.open(image_path)
@@ -244,13 +257,14 @@ def index():
                     
                     # Convert HWP to image
                     hwp_image_path = filepath.replace('.hwp', '.png')
-                    hwp_to_image(filepath, hwp_image_path)
-                    
-                    highlighted_sections = detect_highlights(hwp_image_path)
-                    
-                    # Clean up temporary files
-                    os.remove(filepath)
-                    os.remove(hwp_image_path)
+                    if hwp_to_image(filepath, hwp_image_path):
+                        highlighted_sections = detect_highlights(hwp_image_path)
+                        
+                        # Clean up temporary files
+                        os.remove(filepath)
+                        os.remove(hwp_image_path)
+                    else:
+                        return "Error processing HWP file. Please try again.", 500
                 else:
                     return "Invalid file type. Please upload only HWP files.", 400
         
