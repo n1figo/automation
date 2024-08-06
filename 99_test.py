@@ -7,7 +7,7 @@ from PIL import Image
 import io
 import json
 from dotenv import load_dotenv
-from openai import OpenAI
+import time  # 추가된 모듈
 
 # .env 파일에서 환경 변수 로드
 load_dotenv()
@@ -56,7 +56,7 @@ def encode_image(image):
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def detect_highlights(image, api_key):
+def detect_highlights(image, api_key, retries=3):
     base64_image = encode_image(image)
     
     headers = {
@@ -86,18 +86,24 @@ def detect_highlights(image, api_key):
         "max_tokens": 500
     }
 
-    try:
-        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        content = response.json()['choices'][0]['message']['content']
-        return json.loads(content)
-    except requests.exceptions.RequestException as e:
-        print(f"API request failed: {e}")
-        return []
-    except (KeyError, json.JSONDecodeError) as e:
-        print(f"Failed to parse API response: {e}")
-        return []
+    for attempt in range(retries):
+        try:
+            response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            
+            content = response.json()['choices'][0]['message']['content']
+            return json.loads(content)
+        except requests.exceptions.RequestException as e:
+            print(f"API request failed: {e}")
+            if response.status_code == 429:
+                print(f"Rate limit exceeded. Waiting before retrying... (Attempt {attempt + 1} of {retries})")
+                time.sleep(10)  # 10초 대기 후 재시도
+            else:
+                return []
+        except (KeyError, json.JSONDecodeError) as e:
+            print(f"Failed to parse API response: {e}")
+            return []
+    return []
 
 def capture_highlight(image, coordinates, output_path):
     x, y, width, height = coordinates
