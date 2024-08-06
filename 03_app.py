@@ -55,22 +55,38 @@ def process_hwp_file(filepath):
             if stream[-1] == 'BinData':
                 continue
             
-            encoded_data = ole.openstream(stream).read()
-            decompressed = zlib.decompress(encoded_data, -15)
-            
-            i = 0
-            size = len(decompressed)
-            while i < size:
-                header = struct.unpack('<I', decompressed[i:i+4])[0]
-                rec_type = header & 0x3ff
-                rec_len = (header >> 20) & 0xfff
+            try:
+                encoded_data = ole.openstream(stream).read()
                 
-                if rec_type == 67:  # Text record
-                    rec_data = decompressed[i+4:i+4+rec_len]
-                    text = rec_data.decode('utf-16')
-                    extracted_text.append(text)
+                # Try different decompression methods
+                try:
+                    decompressed = zlib.decompress(encoded_data, -15)
+                except zlib.error:
+                    try:
+                        decompressed = zlib.decompress(encoded_data)
+                    except zlib.error:
+                        print(f"Failed to decompress stream {stream}")
+                        continue
                 
-                i += 4 + rec_len
+                i = 0
+                size = len(decompressed)
+                while i < size:
+                    header = struct.unpack('<I', decompressed[i:i+4])[0]
+                    rec_type = header & 0x3ff
+                    rec_len = (header >> 20) & 0xfff
+                    
+                    if rec_type == 67:  # Text record
+                        rec_data = decompressed[i+4:i+4+rec_len]
+                        try:
+                            text = rec_data.decode('utf-16')
+                            extracted_text.append(text)
+                        except UnicodeDecodeError:
+                            print(f"Failed to decode text in stream {stream}")
+                    
+                    i += 4 + rec_len
+            except Exception as e:
+                print(f"Error processing stream {stream}: {str(e)}")
+                continue
 
     return ' '.join(extracted_text)
 
