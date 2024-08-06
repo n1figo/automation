@@ -7,6 +7,7 @@ from PIL import Image
 import io
 import json
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # .env 파일에서 환경 변수 로드
 load_dotenv()
@@ -64,7 +65,7 @@ def detect_highlights(image, api_key):
     }
 
     payload = {
-        "model": "gpt-4-vision-preview",
+        "model": "gpt-4o-mini",
         "messages": [
             {
                 "role": "user",
