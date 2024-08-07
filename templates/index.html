@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>웹 페이지 캡처 및 HWP 처리</title>
+    <title>웹 페이지 캡처 및 PDF 처리</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -42,13 +42,13 @@
     </style>
 </head>
 <body>
-    <h1>웹 페이지 캡처 및 HWP 처리</h1>
+    <h1>웹 페이지 캡처 및 PDF 처리</h1>
     <form action="/" method="post" enctype="multipart/form-data">
         <label for="url">웹 페이지 URL:</label>
         <input type="text" id="url" name="url" required>
         
-        <label for="hwp_file">HWP 파일 (선택사항):</label>
-        <input type="file" id="hwp_file" name="file" accept=".hwp">
+        <label for="pdf_file">PDF 파일 (선택사항):</label>
+        <input type="file" id="pdf_file" name="file" accept=".pdf">
         
         <input type="submit" value="제출">
     </form>

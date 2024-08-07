@@ -11,8 +11,12 @@ import fitz
 from PIL import Image
 import pytesseract
 import io
+import tempfile
 
 app = Flask(__name__)
+
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 
 def setup_browser():
     playwright = sync_playwright().start()
@@ -167,7 +171,6 @@ def draw_red_rectangle(ws, cell, start_y, end_y, width):
 def index():
     if request.method == 'POST':
         url = request.form['url']
-        pdf_path = request.form['pdf_path']
         
         # 웹페이지 캡처
         homepage_image_path = capture_full_page(url)
@@ -183,12 +186,24 @@ def index():
         img.height = 600
         ws.add_image(img, 'A1')
         
-        # PDF 처리 및 하이라이트 감지
-        output_folder = "highlight_images"
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-        
-        wb = process_pdf(pdf_path, output_folder, homepage_image_path, wb)
+        # PDF 파일 처리
+        if 'file' in request.files:
+            file = request.files['file']
+            if file and file.filename.endswith('.pdf'):
+                # 임시 파일로 PDF 저장
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                    file.save(temp_file.name)
+                    pdf_path = temp_file.name
+
+                # PDF 처리 및 하이라이트 감지
+                output_folder = "highlight_images"
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder)
+                
+                wb = process_pdf(pdf_path, output_folder, homepage_image_path, wb)
+                
+                # 임시 파일 삭제
+                os.unlink(pdf_path)
         
         # 엑셀 파일 저장
         output_dir = 'output/excel'
