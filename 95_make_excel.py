@@ -1,24 +1,23 @@
 import os
 import re
 import logging
-import tempfile
-from flask import Flask, render_template, request, send_file
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.styles import Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Border, Side
 import cv2
 import numpy as np
 import fitz
 from PIL import Image
 import pytesseract
 
-app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
+# 설정
+OUTPUT_DIR = '/workspaces/automation/output/excel'
+SCREENSHOT_PATH = os.path.join(OUTPUT_DIR, "full_page.png")
+HIGHLIGHT_IMAGES_DIR = os.path.join(OUTPUT_DIR, "highlight_images")
 
-logging.basicConfig(level=logging.DEBUG)
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def setup_browser():
@@ -31,11 +30,12 @@ def setup_browser():
 def capture_full_page(url):
     playwright, browser, page = setup_browser()
     try:
+        logger.info(f"Capturing webpage: {url}")
         page.goto(url)
         page.wait_for_timeout(5000)  # Wait for the page to load
-        screenshot_path = "full_page.png"
-        page.screenshot(path=screenshot_path, full_page=True)
-        return screenshot_path
+        page.screenshot(path=SCREENSHOT_PATH, full_page=True)
+        logger.info(f"Webpage captured: {SCREENSHOT_PATH}")
+        return SCREENSHOT_PATH
     finally:
         browser.close()
         playwright.stop()
@@ -107,7 +107,7 @@ def clean_text_for_excel(text):
     
     return text
 
-def process_pdf(pdf_path, output_folder, homepage_image_path, wb):
+def process_pdf(pdf_path, homepage_image_path, wb):
     ws = wb.create_sheet("변경사항")
 
     # 변경 전 홈페이지 이미지 삽입
@@ -136,7 +136,7 @@ def process_pdf(pdf_path, output_folder, homepage_image_path, wb):
         for i, (start_y, end_y) in enumerate(regions):
             highlighted_region = image[start_y:end_y, 0:image.shape[1]]
             
-            output_path = os.path.join(output_folder, f"page_{page_num + 1}_highlights_{i + 1}.png")
+            output_path = os.path.join(HIGHLIGHT_IMAGES_DIR, f"page_{page_num + 1}_highlights_{i + 1}.png")
             cv2.imwrite(output_path, cv2.cvtColor(highlighted_region, cv2.COLOR_RGB2BGR))
 
             # OCR 수행
@@ -183,71 +183,45 @@ def draw_red_rectangle(ws, cell, start_y, end_y, width):
         for row in range(start_row + start_y_adj, start_row + end_y_adj):
             ws.cell(row=row, column=col).border = border
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    if request.method == 'POST':
-        try:
-            url = request.form['url']
-            logger.info(f"Processing URL: {url}")
-            
-            # 웹페이지 캡처
-            homepage_image_path = capture_full_page(url)
-            logger.info(f"Webpage captured: {homepage_image_path}")
-            
-            # 엑셀 워크북 생성
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "홈페이지 캡처"
-            
-            # 홈페이지 캡처 이미지를 첫 번째 시트에 추가
-            img = XLImage(homepage_image_path)
-            img.width = 800
-            img.height = 600
-            ws.add_image(img, 'A1')
-            
-            # PDF 파일 처리
-            if 'file' in request.files:
-                file = request.files['file']
-                if file and file.filename.endswith('.pdf'):
-                    logger.info(f"Processing PDF file: {file.filename}")
-                    # 임시 파일로 PDF 저장
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                        file.save(temp_file.name)
-                        pdf_path = temp_file.name
+def main(url, pdf_path):
+    try:
+        # 출력 디렉토리 생성
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        os.makedirs(HIGHLIGHT_IMAGES_DIR, exist_ok=True)
 
-                    # PDF 처리 및 하이라이트 감지
-                    output_folder = "highlight_images"
-                    if not os.path.exists(output_folder):
-                        os.makedirs(output_folder)
-                    
-                    try:
-                        wb = process_pdf(pdf_path, output_folder, homepage_image_path, wb)
-                        logger.info("PDF processing completed")
-                    except Exception as e:
-                        logger.error(f"Error processing PDF: {str(e)}", exc_info=True)
-                        # 오류 발생 시에도 계속 진행
-                    
-                    # 임시 파일 삭제
-                    os.unlink(pdf_path)
-                else:
-                    logger.warning("Invalid file type uploaded")
-                    return "Please upload a PDF file", 400
-            
-            # 엑셀 파일 저장
-            output_dir = 'output/excel'
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            excel_filename = "output.xlsx"
-            excel_path = os.path.join(output_dir, excel_filename)
-            wb.save(excel_path)
-            logger.info(f"Excel file created: {excel_path}")
-            
-            return send_file(excel_path, as_attachment=True)
-        except Exception as e:
-            logger.error(f"An error occurred: {str(e)}", exc_info=True)
-            return "An error occurred while processing your request", 500
-
-    return render_template('index.html')
+        # 웹페이지 캡처
+        homepage_image_path = capture_full_page(url)
+        
+        # 엑셀 워크북 생성
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "홈페이지 캡처"
+        
+        # 홈페이지 캡처 이미지를 첫 번째 시트에 추가
+        img = XLImage(homepage_image_path)
+        img.width = 800
+        img.height = 600
+        ws.add_image(img, 'A1')
+        
+        # PDF 처리
+        if pdf_path and os.path.exists(pdf_path):
+            logger.info(f"Processing PDF file: {pdf_path}")
+            wb = process_pdf(pdf_path, homepage_image_path, wb)
+            logger.info("PDF processing completed")
+        else:
+            logger.warning("PDF file not found or not provided")
+        
+        # 엑셀 파일 저장
+        excel_filename = "output.xlsx"
+        excel_path = os.path.join(OUTPUT_DIR, excel_filename)
+        wb.save(excel_path)
+        logger.info(f"Excel file created: {excel_path}")
+        
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # 여기에 처리할 웹페이지 URL과 PDF 파일 경로를 입력하세요
+    URL = "https://www.kbinsure.co.kr/CG302290001.ec#"
+    PDF_PATH = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    main(URL, PDF_PATH)
