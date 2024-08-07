@@ -1,13 +1,37 @@
-import cv2
-import numpy as np
-import fitz
-import os
-from PIL import Image
-import pytesseract
+from flask import Flask, render_template, request, send_file
+from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import os
+import cv2
+import numpy as np
+import fitz
+from PIL import Image
+import pytesseract
+import io
+
+app = Flask(__name__)
+
+def setup_browser():
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.launch(headless=True)
+    context = browser.new_context()
+    page = context.new_page()
+    return playwright, browser, page
+
+def capture_full_page(url):
+    playwright, browser, page = setup_browser()
+    try:
+        page.goto(url)
+        page.wait_for_timeout(5000)  # Wait for the page to load
+        screenshot_path = "full_page.png"
+        page.screenshot(path=screenshot_path, full_page=True)
+        return screenshot_path
+    finally:
+        browser.close()
+        playwright.stop()
 
 def pdf_to_image(pdf_path, page_num):
     doc = fitz.open(pdf_path)
@@ -64,17 +88,8 @@ def get_capture_regions(contours, image_height, image_width):
     
     return regions
 
-def process_pdf(pdf_path, output_folder, homepage_image_path):
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-
-    doc = fitz.open(pdf_path)
-    total_pages = len(doc)
-    doc.close()
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "변경사항"
+def process_pdf(pdf_path, output_folder, homepage_image_path, wb):
+    ws = wb.create_sheet("변경사항")
 
     # 변경 전 홈페이지 이미지 삽입
     img = XLImage(homepage_image_path)
@@ -82,6 +97,10 @@ def process_pdf(pdf_path, output_folder, homepage_image_path):
 
     row = 1
     col = 'G'  # 하이라이트 이미지 시작 열
+
+    doc = fitz.open(pdf_path)
+    total_pages = len(doc)
+    doc.close()
 
     for page_num in range(total_pages):
         print(f"Processing page {page_num + 1} of {total_pages}")
@@ -120,8 +139,7 @@ def process_pdf(pdf_path, output_folder, homepage_image_path):
                 row = 1
                 col = chr(ord(col) + 1)
 
-    wb.save(os.path.join(output_folder, "changes.xlsx"))
-    print("Excel file created: changes.xlsx")
+    return wb
 
 def draw_red_rectangle(ws, cell, start_y, end_y, width):
     img = ws._images[0]  # 첫 번째 이미지 (변경 전 홈페이지 이미지)
@@ -145,13 +163,44 @@ def draw_red_rectangle(ws, cell, start_y, end_y, width):
         for row in range(start_row + start_y_adj, start_row + end_y_adj):
             ws.cell(row=row, column=col).border = border
 
-# 실행 파라미터
-pdf_path = "/workspaces/automation/uploads/1722922992_5._KB_5.10.10_24.05__0801_v1.0.pdf"
-output_folder = "/workspaces/automation/highlight_images"
-homepage_image_path = "/path/to/homepage_image.png"  # 변경 전 홈페이지 이미지 경로
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        url = request.form['url']
+        pdf_path = request.form['pdf_path']
+        
+        # 웹페이지 캡처
+        homepage_image_path = capture_full_page(url)
+        
+        # 엑셀 워크북 생성
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "홈페이지 캡처"
+        
+        # 홈페이지 캡처 이미지를 첫 번째 시트에 추가
+        img = XLImage(homepage_image_path)
+        img.width = 800
+        img.height = 600
+        ws.add_image(img, 'A1')
+        
+        # PDF 처리 및 하이라이트 감지
+        output_folder = "highlight_images"
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        
+        wb = process_pdf(pdf_path, output_folder, homepage_image_path, wb)
+        
+        # 엑셀 파일 저장
+        output_dir = 'output/excel'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        excel_filename = "output.xlsx"
+        excel_path = os.path.join(output_dir, excel_filename)
+        wb.save(excel_path)
+        
+        return send_file(excel_path, as_attachment=True)
 
-# 메인 실행
+    return render_template('index.html')
+
 if __name__ == "__main__":
-    print(f"Starting to process PDF: {pdf_path}")
-    process_pdf(pdf_path, output_folder, homepage_image_path)
-    print("Processing completed.")
+    app.run(debug=True)
