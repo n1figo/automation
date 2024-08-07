@@ -11,6 +11,9 @@ import fitz
 from PIL import Image
 import pytesseract
 
+
+
+
 # 설정
 OUTPUT_DIR = '/workspaces/automation/output/excel'
 SCREENSHOT_PATH = os.path.join(OUTPUT_DIR, "full_page.png")
@@ -219,6 +222,9 @@ def main(url, pdf_path):
         
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}", exc_info=True)
+
+
+
 
 if __name__ == "__main__":
     # 여기에 처리할 웹페이지 URL과 PDF 파일 경로를 입력하세요
