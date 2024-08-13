@@ -1,5 +1,5 @@
 import os
-from flask import Flask, render_template, request, send_file, abort
+from flask import Flask, render_template, request, send_file, abort, jsonify
 from werkzeug.utils import secure_filename
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
@@ -91,7 +91,7 @@ def detect_highlights(image):
     
     return highlighted_sections
 
-def create_excel_with_highlights(image_path, excel_filename, data, highlighted_sections):
+def create_excel_with_highlights(image_path, excel_filename, data, highlighted_sections, coverage_content):
     wb = Workbook()
     ws = wb.active
     
@@ -134,6 +134,10 @@ def create_excel_with_highlights(image_path, excel_filename, data, highlighted_s
         ws.add_image(highlight_image, f'A{ws.max_row + 1}')
         ws.row_dimensions[ws.max_row].height = 75  # Adjust row height
     
+    # Add coverage content
+    ws.cell(row=ws.max_row + 2, column=1, value="보장내용")
+    ws.cell(row=ws.max_row, column=2, value=coverage_content)
+    
     output_dir = 'output/excel'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -146,7 +150,6 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# New functions for web-PDF comparison
 def extract_pdf_text(pdf_path):
     doc = fitz.open(pdf_path)
     text = ""
@@ -203,6 +206,17 @@ def highlight_changes_on_html_capture(html_capture_path, changes, text_positions
         img.save(highlighted_capture_path)
         return highlighted_capture_path
 
+def extract_tab_content(url, tab_name):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # 탭 요소를 찾습니다. 이 부분은 실제 웹페이지 구조에 따라 조정이 필요할 수 있습니다.
+    tabs = soup.find_all('div', class_='tab-content')
+    for tab in tabs:
+        if tab_name in tab.text:
+            return tab.text.strip()
+    return "탭 내용을 찾을 수 없습니다."
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -213,11 +227,14 @@ def index():
 
             image_path = capture_full_page(url)
             
+            # '보장내용' 탭의 내용을 추출합니다.
+            coverage_content = extract_tab_content(url, '보장내용')
+            
             # Here you should implement the web scraping function to get the data
             # For now, I'll use a dummy data structure
             data = {
                 '상품명': 'Sample Product',
-                '보장내용': 'Sample Coverage',
+                '보장내용': coverage_content,
                 '보험기간': 'Sample Period',
                 '테이블 데이터': [{'Column1': 'Value1', 'Column2': 'Value2'}]
             }
@@ -257,13 +274,23 @@ def index():
                 return "Invalid file type. Please upload only PDF files.", 400
             
             excel_filename = "output.xlsx"
-            excel_path = create_excel_with_highlights(highlighted_capture_path, excel_filename, data, highlighted_sections)
+            excel_path = create_excel_with_highlights(highlighted_capture_path, excel_filename, data, highlighted_sections, coverage_content)
             return send_file(excel_path, as_attachment=True)
         except Exception as e:
             app.logger.error(f"An error occurred: {str(e)}")
             return f"An error occurred: {str(e)}", 500
 
     return render_template('index.html')
+
+@app.route('/get_tab_content', methods=['POST'])
+def get_tab_content():
+    url = request.json.get('url')
+    tab_name = request.json.get('tab_name')
+    if not url or not tab_name:
+        return jsonify({"error": "URL and tab name are required"}), 400
+    
+    content = extract_tab_content(url, tab_name)
+    return jsonify({"content": content})
 
 if __name__ == "__main__":
     app.run(debug=True)
