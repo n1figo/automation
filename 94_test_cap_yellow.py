@@ -64,7 +64,7 @@ def highlight_differences(original_image_path, changed_image_path, output_filena
 
 def main():
     url = "https://www.kbinsure.co.kr/CG302120001.ec"
-    pdf_path = "path_to_your_pdf_summary.pdf"  # Replace with actual path
+    pdf_path = "uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"  # Replace with actual path
     original_image_path = "/workspaces/automation/uploads/변경전.jpeg"
     
     # Capture screenshots (current version)
