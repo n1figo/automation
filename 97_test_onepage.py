@@ -98,7 +98,7 @@ def main(pdf_path, web_url, html_capture_path):
     print("처리가 완료되었습니다. 결과 이미지를 확인하세요.")
 
 if __name__ == "__main__":
-    pdf_path = "/path/to/your/pdf/file.pdf"
-    web_url = "https://example.com"
+    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    web_url = "https://www.kbinsure.co.kr/CG302290001.ec"
     html_capture_path = "/path/to/your/html_capture.png"
     main(pdf_path, web_url, html_capture_path)
