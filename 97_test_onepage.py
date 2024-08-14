@@ -3,7 +3,7 @@ import os
 
 def setup_browser():
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=False)  # Set to True for headless mode
+    browser = playwright.chromium.launch(headless=True)  # Always use headless mode
     context = browser.new_context()
     page = context.new_page()
     return playwright, browser, page
