@@ -49,7 +49,7 @@ def compare_documents(text1, text2):
 
 def main():
     url = "https://www.kbinsure.co.kr/CG302120001.ec"
-    pdf_path = "path_to_your_pdf_summary.pdf"  # Replace with actual path
+    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"  # Replace with actual path
 
     signup_html = get_html_content(url, 'a#tabexmpl')
     coverage_html = get_html_content(url, 'a#tabguarnt')
