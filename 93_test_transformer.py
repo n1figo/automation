@@ -69,7 +69,7 @@ def compare_dataframes(df1, df2):
 def main():
     print("프로그램 시작")
     image_path = "/workspaces/automation/uploads/변경전.jpeg"
-    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
 
     df_image = extract_table_from_image(image_path)
     df_pdf = extract_table_from_pdf(pdf_path)
