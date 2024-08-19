@@ -1,27 +1,24 @@
 from sentence_transformers import SentenceTransformer, util
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
+import pytesseract
+import fitz  # PyMuPDF
 import io
 
-def get_html_content_and_screenshot(url, tab_selector):
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(url)
-        page.click(tab_selector)
-        page.wait_for_load_state('networkidle')
-        content = page.content()
-        screenshot = page.screenshot(full_page=True)
-        browser.close()
-    return content, screenshot
+def extract_text_from_image(image_path):
+    image = Image.open(image_path)
+    text = pytesseract.image_to_string(image, lang='kor+eng')
+    return text
+
+def extract_text_from_pdf(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    doc.close()
+    return text
 
 def extract_sentences(text):
     return [sent.strip() for sent in text.split('.') if sent.strip()]
-
-def extract_text_from_html(html_content):
-    soup = BeautifulSoup(html_content, 'html.parser')
-    return ' '.join(soup.stripped_strings)
 
 def compare_documents(text1, text2):
     model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
@@ -41,49 +38,47 @@ def compare_documents(text1, text2):
     
     return changes
 
-def highlight_changes_on_image(screenshot, changes):
-    image = Image.open(io.BytesIO(screenshot))
+def highlight_changes_on_image(image_path, changes):
+    image = Image.open(image_path)
     draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
+    font = ImageFont.truetype("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 20)  # Adjust path as needed
 
     y_position = 10
     for old, new in changes:
-        draw.rectangle([10, y_position, image.width - 10, y_position + 40], 
+        draw.rectangle([10, y_position, image.width - 10, y_position + 80], 
                        fill=(255, 255, 0, 128))  # Semi-transparent yellow
-        draw.text((15, y_position), f"Old: {old[:50]}...", fill=(255, 0, 0), font=font)
-        draw.text((15, y_position + 20), f"New: {new[:50]}...", fill=(0, 255, 0), font=font)
-        y_position += 45
+        draw.text((15, y_position), f"변경 전: {old[:50]}...", fill=(255, 0, 0), font=font)
+        draw.text((15, y_position + 40), f"변경 후: {new[:50]}...", fill=(0, 255, 0), font=font)
+        y_position += 85
 
     return image
 
 def main():
-    url_original = "https://www.kbinsure.co.kr/CG302120001.ec"  # URL for original (left) document
-    url_changed = "https://www.kbinsure.co.kr/CG302120001_changed.ec"  # URL for changed (right) document, replace with actual URL
+    original_image_path = "/workspaces/automation/uploads/변경전.jpeg"
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
 
-    # Get content and screenshot for original document
-    original_html, original_screenshot = get_html_content_and_screenshot(url_original, 'a#tabexmpl')
-    original_text = extract_text_from_html(original_html)
+    # Extract text from original image
+    original_text = extract_text_from_image(original_image_path)
 
-    # Get content for changed document
-    changed_html, _ = get_html_content_and_screenshot(url_changed, 'a#tabexmpl')
-    changed_text = extract_text_from_html(changed_html)
+    # Extract text from PDF
+    pdf_text = extract_text_from_pdf(pdf_path)
 
     # Compare documents
-    changes = compare_documents(original_text, changed_text)
+    changes = compare_documents(original_text, pdf_text)
 
-    # Highlight changes on the original document's screenshot
-    highlighted_image = highlight_changes_on_image(original_screenshot, changes)
+    # Highlight changes on the original image
+    highlighted_image = highlight_changes_on_image(original_image_path, changes)
 
     # Save the highlighted image
     highlighted_image.save("highlighted_changes.png")
 
-    print("Changes highlighted and saved in 'highlighted_changes.png'")
+    print("변경 사항이 하이라이트된 이미지가 'highlighted_changes.png'로 저장되었습니다.")
 
     # Print changes for reference
-    print("\nDetected changes:")
+    print("\n감지된 변경 사항:")
     for old, new in changes:
-        print(f"Old: {old}")
-        print(f"New: {new}")
+        print(f"변경 전: {old}")
+        print(f"변경 후: {new}")
         print("---")
 
 if __name__ == "__main__":
