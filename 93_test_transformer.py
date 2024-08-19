@@ -1,9 +1,10 @@
 import pytesseract
 from PIL import Image
 import pandas as pd
-import tabula
 import numpy as np
 import cv2
+import pdfplumber
+import re
 
 def extract_table_from_image(image_path):
     print("이미지에서 표 추출 시작...")
@@ -11,45 +12,61 @@ def extract_table_from_image(image_path):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # Detect horizontal lines
+    # Detect horizontal and vertical lines
     horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40,1))
-    detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
-    cnts = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-    for c in cnts:
-        cv2.drawContours(img, [c], -1, (255,0,0), 2)
-
-    # Detect vertical lines
     vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1,40))
-    detect_vertical = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
-    cnts = cv2.findContours(detect_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-    for c in cnts:
-        cv2.drawContours(img, [c], -1, (255,0,0), 2)
+    horizontal_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+    vertical_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+
+    # Combine lines
+    table_mask = horizontal_lines + vertical_lines
+    table_mask = cv2.dilate(table_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
+    
+    # Extract table area
+    table_area = cv2.bitwise_and(img, img, mask=table_mask)
 
     # OCR
-    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DATAFRAME)
+    data = pytesseract.image_to_data(table_area, lang='kor+eng', output_type=pytesseract.Output.DATAFRAME)
     data = data[data.conf != -1]
-    lines = data.groupby('block_num')['text'].apply(list).tolist()
     
-    df = pd.DataFrame(lines)
+    # Group text by lines
+    data['line_num'] = data['top'] // 10  # Adjust this value based on your image
+    lines = data.groupby('line_num')['text'].apply(lambda x: ' '.join(x)).tolist()
+    
+    # Convert to dataframe
+    df = pd.DataFrame([line.split() for line in lines if line.strip()])
     print("이미지에서 표 추출 완료")
     return df
 
 def extract_table_from_pdf(pdf_path):
     print("PDF에서 표 추출 시작...")
-    tables = tabula.read_pdf(pdf_path, pages='all', multiple_tables=True)
-    if tables:
-        df = tables[0]  # Assuming we're interested in the first table
-        print("PDF에서 표 추출 완료")
-        return df
-    else:
-        print("PDF에서 표를 찾을 수 없습니다.")
-        return None
+    with pdfplumber.open(pdf_path) as pdf:
+        first_page = pdf.pages[0]
+        tables = first_page.extract_tables()
+        if tables:
+            df = pd.DataFrame(tables[0][1:], columns=tables[0][0])  # Assuming first row is header
+            print("PDF에서 표 추출 완료")
+            return df
+        else:
+            print("PDF에서 표를 찾을 수 없습니다.")
+            return None
+
+def preprocess_dataframe(df):
+    # Remove any empty columns
+    df = df.dropna(axis=1, how='all')
+    # Remove any rows where all elements are NaN or empty string
+    df = df[(df.notna().any(axis=1)) & (df.astype(str).ne('').any(axis=1))]
+    # Replace NaN with empty string
+    df = df.fillna('')
+    return df
 
 def compare_dataframes(df1, df2):
     print("데이터프레임 비교 시작...")
     changes = []
+
+    # Preprocess dataframes
+    df1 = preprocess_dataframe(df1)
+    df2 = preprocess_dataframe(df2)
 
     # Check for added rows
     if len(df2) > len(df1):
@@ -59,9 +76,12 @@ def compare_dataframes(df1, df2):
     # Check for changed cells
     for i in range(min(len(df1), len(df2))):
         for col in df1.columns:
-            if df1.iloc[i][col] != df2.iloc[i][col]:
-                changes.append(f"셀 변경: 행 {i+1}, 열 '{col}' - "
-                               f"변경 전: {df1.iloc[i][col]}, 변경 후: {df2.iloc[i][col]}")
+            if col in df2.columns:
+                val1 = str(df1.iloc[i][col]).strip()
+                val2 = str(df2.iloc[i][col]).strip()
+                if val1 != val2:
+                    changes.append(f"셀 변경: 행 {i+1}, 열 '{col}' - "
+                                   f"변경 전: {val1}, 변경 후: {val2}")
 
     print(f"데이터프레임 비교 완료. {len(changes)}개의 변경 사항 발견")
     return changes
@@ -69,7 +89,7 @@ def compare_dataframes(df1, df2):
 def main():
     print("프로그램 시작")
     image_path = "/workspaces/automation/uploads/변경전.jpeg"
-    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
 
     df_image = extract_table_from_image(image_path)
     df_pdf = extract_table_from_pdf(pdf_path)
