@@ -96,7 +96,7 @@ def highlight_changes_on_image(image_path, changes, ocr_data, output_path):
 def main():
     print("프로그램 시작")
     image_path = "/workspaces/automation/uploads/변경전.jpeg"
-    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_dir = "/workspaces/automation/output"
     os.makedirs(output_dir, exist_ok=True)
     output_image_path = os.path.join(output_dir, "highlighted_changes.png")
