@@ -7,7 +7,85 @@ import pdfplumber
 import re
 import os
 
-# ... (이전의 extract_table_from_image, extract_table_from_pdf, preprocess_dataframe, compare_dataframes 함수들은 그대로 유지) ...
+def extract_table_from_image(image_path):
+    print("이미지에서 표 추출 시작...")
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
+    # Detect horizontal and vertical lines
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40,1))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1,40))
+    horizontal_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+    vertical_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+
+    # Combine lines
+    table_mask = horizontal_lines + vertical_lines
+    table_mask = cv2.dilate(table_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
+    
+    # Extract table area
+    table_area = cv2.bitwise_and(img, img, mask=table_mask)
+
+    # OCR
+    data = pytesseract.image_to_data(table_area, lang='kor+eng', output_type=pytesseract.Output.DATAFRAME)
+    data = data[data.conf != -1]
+    
+    # Group text by lines
+    data['line_num'] = data['top'] // 10  # Adjust this value based on your image
+    lines = data.groupby('line_num')['text'].apply(lambda x: ' '.join(x)).tolist()
+    
+    # Convert to dataframe
+    df = pd.DataFrame([line.split() for line in lines if line.strip()])
+    print("이미지에서 표 추출 완료")
+    return df
+
+def extract_table_from_pdf(pdf_path):
+    print("PDF에서 표 추출 시작...")
+    with pdfplumber.open(pdf_path) as pdf:
+        first_page = pdf.pages[0]
+        tables = first_page.extract_tables()
+        if tables:
+            df = pd.DataFrame(tables[0][1:], columns=tables[0][0])  # Assuming first row is header
+            print("PDF에서 표 추출 완료")
+            return df
+        else:
+            print("PDF에서 표를 찾을 수 없습니다.")
+            return None
+
+def preprocess_dataframe(df):
+    # Remove any empty columns
+    df = df.dropna(axis=1, how='all')
+    # Remove any rows where all elements are NaN or empty string
+    df = df[(df.notna().any(axis=1)) & (df.astype(str).ne('').any(axis=1))]
+    # Replace NaN with empty string
+    df = df.fillna('')
+    return df
+
+def compare_dataframes(df1, df2):
+    print("데이터프레임 비교 시작...")
+    changes = []
+
+    # Preprocess dataframes
+    df1 = preprocess_dataframe(df1)
+    df2 = preprocess_dataframe(df2)
+
+    # Check for added rows
+    if len(df2) > len(df1):
+        for i in range(len(df1), len(df2)):
+            changes.append(f"새로운 행 추가: {df2.iloc[i].to_dict()}")
+
+    # Check for changed cells
+    for i in range(min(len(df1), len(df2))):
+        for col in df1.columns:
+            if col in df2.columns:
+                val1 = str(df1.iloc[i][col]).strip()
+                val2 = str(df2.iloc[i][col]).strip()
+                if val1 != val2:
+                    changes.append(f"셀 변경: 행 {i+1}, 열 '{col}' - "
+                                   f"변경 전: {val1}, 변경 후: {val2}")
+
+    print(f"데이터프레임 비교 완료. {len(changes)}개의 변경 사항 발견")
+    return changes
 
 def highlight_changes_on_image(image_path, changes, output_path):
     print("변경 사항을 이미지에 표시하는 중...")
@@ -30,7 +108,7 @@ def highlight_changes_on_image(image_path, changes, output_path):
 def main():
     print("프로그램 시작")
     image_path = "/workspaces/automation/uploads/변경전.jpeg"
-    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_dir = "/workspaces/automation/output"
     os.makedirs(output_dir, exist_ok=True)
     output_image_path = os.path.join(output_dir, "highlighted_changes.png")
