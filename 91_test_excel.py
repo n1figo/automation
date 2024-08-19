@@ -65,6 +65,17 @@ def compare_dataframes(df1, df2):
     print(f"데이터프레임 비교 완료. {len(changes)}개의 변경 사항 발견")
     return changes
 
+import pandas as pd
+import numpy as np
+import cv2
+import pytesseract
+import pdfplumber
+import os
+import csv
+import codecs
+
+# ... (이전의 extract_table_from_image, extract_table_from_pdf, compare_dataframes 함수들은 그대로 유지) ...
+
 def mark_changes_in_csv(df, changes, output_path):
     print("변경 사항을 CSV 파일에 표시하는 중...")
     
@@ -84,8 +95,22 @@ def mark_changes_in_csv(df, changes, output_path):
             new_row = pd.DataFrame({'before_mark': ['NEW'], **change[2]}, index=[row_index])
             df = pd.concat([df.iloc[:row_index], new_row, df.iloc[row_index:]]).reset_index(drop=True)
 
-    df.to_csv(output_path, index=False, encoding='cp949')
-    print(f"변경 사항이 표시된 CSV 파일이 저장되었습니다: {output_path}")
+    try:
+        # UTF-8 인코딩으로 CSV 파일 저장 시도
+        with codecs.open(output_path, 'w', encoding='utf-8-sig') as f:
+            df.to_csv(f, index=False, quoting=csv.QUOTE_ALL)
+        print(f"변경 사항이 표시된 CSV 파일이 UTF-8로 저장되었습니다: {output_path}")
+    except Exception as e:
+        print(f"UTF-8 인코딩 저장 중 오류 발생: {e}")
+        try:
+            # ASCII로 저장 시도 (인코딩 불가능한 문자는 대체됩니다)
+            with codecs.open(output_path, 'w', encoding='ascii', errors='replace') as f:
+                df.to_csv(f, index=False, quoting=csv.QUOTE_ALL)
+            print(f"변경 사항이 표시된 CSV 파일이 ASCII로 저장되었습니다: {output_path}")
+        except Exception as e:
+            print(f"ASCII 인코딩 저장 중 오류 발생: {e}")
+            print("CSV 파일 저장에 실패했습니다.")
+
     return df
 
 def main():
