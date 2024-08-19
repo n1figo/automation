@@ -84,7 +84,7 @@ def mark_changes_in_csv(df, changes, output_path):
             new_row = pd.DataFrame({'before_mark': ['NEW'], **change[2]}, index=[row_index])
             df = pd.concat([df.iloc[:row_index], new_row, df.iloc[row_index:]]).reset_index(drop=True)
 
-    df.to_csv(output_path, index=False, encoding='utf-8-sig')
+    df.to_csv(output_path, index=False, encoding='cp949')
     print(f"변경 사항이 표시된 CSV 파일이 저장되었습니다: {output_path}")
     return df
 
