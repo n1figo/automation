@@ -1,9 +1,10 @@
 from sentence_transformers import SentenceTransformer, util
-import fitz  # PyMuPDF
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFont
+import io
 
-def get_html_content(url, tab_selector):
+def get_html_content_and_screenshot(url, tab_selector):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -11,8 +12,9 @@ def get_html_content(url, tab_selector):
         page.click(tab_selector)
         page.wait_for_load_state('networkidle')
         content = page.content()
+        screenshot = page.screenshot(full_page=True)
         browser.close()
-    return content
+    return content, screenshot
 
 def extract_sentences(text):
     return [sent.strip() for sent in text.split('.') if sent.strip()]
@@ -20,14 +22,6 @@ def extract_sentences(text):
 def extract_text_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     return ' '.join(soup.stripped_strings)
-
-def extract_text_from_pdf(pdf_path):
-    doc = fitz.open(pdf_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    doc.close()
-    return text
 
 def compare_documents(text1, text2):
     model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
@@ -39,29 +33,58 @@ def compare_documents(text1, text2):
     
     cosine_scores = util.pytorch_cos_sim(embeddings1, embeddings2)
     
-    differences = []
+    changes = []
     for i, sent1 in enumerate(sentences1):
         max_score = max(cosine_scores[i])
-        if max_score < 0.8:  # Threshold for considering as different
-            differences.append(f"Different: {sent1}")
+        if max_score < 0.8:  # Threshold for considering as changed
+            changes.append((sent1, sentences2[cosine_scores[i].argmax()]))
     
-    return differences
+    return changes
+
+def highlight_changes_on_image(screenshot, changes):
+    image = Image.open(io.BytesIO(screenshot))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    y_position = 10
+    for old, new in changes:
+        draw.rectangle([10, y_position, image.width - 10, y_position + 40], 
+                       fill=(255, 255, 0, 128))  # Semi-transparent yellow
+        draw.text((15, y_position), f"Old: {old[:50]}...", fill=(255, 0, 0), font=font)
+        draw.text((15, y_position + 20), f"New: {new[:50]}...", fill=(0, 255, 0), font=font)
+        y_position += 45
+
+    return image
 
 def main():
-    url = "https://www.kbinsure.co.kr/CG302120001.ec"
-    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"  # Replace with actual path
+    url_original = "https://www.kbinsure.co.kr/CG302120001.ec"  # URL for original (left) document
+    url_changed = "https://www.kbinsure.co.kr/CG302120001_changed.ec"  # URL for changed (right) document, replace with actual URL
 
-    signup_html = get_html_content(url, 'a#tabexmpl')
-    coverage_html = get_html_content(url, 'a#tabguarnt')
+    # Get content and screenshot for original document
+    original_html, original_screenshot = get_html_content_and_screenshot(url_original, 'a#tabexmpl')
+    original_text = extract_text_from_html(original_html)
 
-    signup_text = extract_text_from_html(signup_html)
-    coverage_text = extract_text_from_html(coverage_html)
-    pdf_text = extract_text_from_pdf(pdf_path)
+    # Get content for changed document
+    changed_html, _ = get_html_content_and_screenshot(url_changed, 'a#tabexmpl')
+    changed_text = extract_text_from_html(changed_html)
 
-    print("Differences in Signup tab:")
-    print('\n'.join(compare_documents(pdf_text, signup_text)))
-    print("\nDifferences in Coverage tab:")
-    print('\n'.join(compare_documents(pdf_text, coverage_text)))
+    # Compare documents
+    changes = compare_documents(original_text, changed_text)
+
+    # Highlight changes on the original document's screenshot
+    highlighted_image = highlight_changes_on_image(original_screenshot, changes)
+
+    # Save the highlighted image
+    highlighted_image.save("highlighted_changes.png")
+
+    print("Changes highlighted and saved in 'highlighted_changes.png'")
+
+    # Print changes for reference
+    print("\nDetected changes:")
+    for old, new in changes:
+        print(f"Old: {old}")
+        print(f"New: {new}")
+        print("---")
 
 if __name__ == "__main__":
     main()
