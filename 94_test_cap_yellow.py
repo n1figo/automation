@@ -47,7 +47,7 @@ def highlight_differences(diff):
 
 def main():
     url = "https://www.kbinsure.co.kr/CG302120001.ec"
-    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"  # Replace with actual path
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"  # Replace with actual path
 
     # Get HTML content
     signup_html = get_html_content(url, 'a#tabexmpl')
