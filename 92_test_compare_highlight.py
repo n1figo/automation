@@ -91,7 +91,9 @@ def highlight_changes_on_image(image_path, changes, output_path):
     print("변경 사항을 이미지에 표시하는 중...")
     image = Image.open(image_path)
     draw = ImageDraw.Draw(image)
-    font = ImageFont.truetype("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 20)  # 폰트 경로 확인 필요
+    
+    # 기본 폰트 사용
+    font = ImageFont.load_default()
 
     y_position = 10
     for change in changes:
@@ -108,7 +110,7 @@ def highlight_changes_on_image(image_path, changes, output_path):
 def main():
     print("프로그램 시작")
     image_path = "/workspaces/automation/uploads/변경전.jpeg"
-    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_dir = "/workspaces/automation/output"
     os.makedirs(output_dir, exist_ok=True)
     output_image_path = os.path.join(output_dir, "highlighted_changes.png")
