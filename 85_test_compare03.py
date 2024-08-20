@@ -11,14 +11,11 @@ import numpy as np
 def extract_tables_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # 선택특약 또는 선택약관 섹션을 찾습니다
     special_section = soup.find('p', string=re.compile(r'선택특약|선택약관'))
     
     if special_section:
-        # 선택특약/선택약관 섹션 이후의 모든 표를 찾습니다
         tables = special_section.find_all_next('table', class_='tb_default03')
     else:
-        # 선택특약/선택약관 섹션을 찾지 못한 경우, 모든 표를 추출합니다
         tables = soup.find_all('table', class_='tb_default03')
     
     return tables
@@ -28,17 +25,16 @@ def process_table(table, table_index):
     if not headers:
         headers = [td.text.strip() for td in table.find('tr').find_all('td')]
     
-    # 고유한 접두사를 추가하여 컬럼 이름을 고유하게 만듭니다
     headers = [f"Table_{table_index}_{header}" for header in headers]
     headers.append(f"Table_{table_index}_변경_여부")
     
     rows = []
-    for tr in table.find_all('tr')[1:]:  # Skip the header row
+    for tr in table.find_all('tr')[1:]:
         row = [td.text.strip() for td in tr.find_all('td')]
         if row:
-            while len(row) < len(headers) - 1:  # -1 because we added '변경 여부'
+            while len(row) < len(headers) - 1:
                 row.append('')
-            row.append('')  # '변경 여부' 컬럼에 기본값 추가
+            row.append('')
             rows.append(row)
     
     print(f"Headers: {headers}")
@@ -49,10 +45,8 @@ def process_table(table, table_index):
 
 def is_color_highlighted(color):
     r, g, b = color
-    # 흰색, 회색, 검정색 제외
-    if r == g == b:  # 회색 계열
+    if r == g == b:
         return False
-    # 밝은 색상만 하이라이트로 간주
     return max(r, g, b) > 200 and (max(r, g, b) - min(r, g, b)) > 30
 
 def detect_highlights(image):
@@ -65,23 +59,14 @@ def detect_highlights(image):
             if is_color_highlighted(img_array[y, x]):
                 highlighted_rows.add(y)
     
-    highlighted_sections = []
-    start_row = None
-    for row in range(height):
-        if row in highlighted_rows:
-            if start_row is None:
-                start_row = max(0, row - 10 * image.size[1] // height)  # 약 10줄 위
-        elif start_row is not None:
-            end_row = min(height, row + 10 * image.size[1] // height)  # 약 10줄 아래
-            highlighted_sections.append((0, start_row, width, end_row))
-            start_row = None
+    if highlighted_rows:
+        start_row = max(0, min(highlighted_rows) - 10 * height // 100)
+        end_row = min(height, max(highlighted_rows) + 10 * height // 100)
+        return [(0, start_row, width, end_row)]
     
-    if start_row is not None:
-        highlighted_sections.append((0, start_row, width, height))
-    
-    return highlighted_sections
+    return []
 
-def extract_highlighted_text_with_context(pdf_path, max_pages=10):
+def extract_highlighted_text_with_context(pdf_path, max_pages=20):
     print("PDF에서 음영 처리된 텍스트 추출 시작...")
     doc = fitz.open(pdf_path)
     total_pages = min(len(doc), max_pages)
@@ -98,12 +83,13 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=10):
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         highlighted_sections = detect_highlights(img)
         
-        for i, section in enumerate(highlighted_sections):
+        if highlighted_sections:
+            section = highlighted_sections[0]
             x0, y0, x1, y1 = section
             
             highlight_img = img.crop(section)
             
-            image_filename = f"page_{page_num + 1}_highlight_{i+1}.png"
+            image_filename = f"page_{page_num + 1}_highlight.png"
             image_path = os.path.join(output_image_dir, image_filename)
             highlight_img.save(image_path)
             
@@ -149,16 +135,14 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     output_excel_path = os.path.join(output_dir, "matching_rows.xlsx")
 
-    # HTML에서 표 추출
     response = requests.get(url)
     html_content = response.text
     tables = extract_tables_from_html(html_content)
     
-    # 추출한 표를 DataFrame으로 변환
     df_list = []
     for i, table in enumerate(tables):
         headers, data = process_table(table, i)
-        if data:  # 데이터가 있는 경우에만 DataFrame 생성
+        if data:
             df_table = pd.DataFrame(data, columns=headers)
             df_list.append(df_table)
 
