@@ -56,8 +56,11 @@ def is_color_highlighted(color):
 def extract_highlighted_text_with_context(pdf_path):
     print("PDF에서 음영 처리된 텍스트 추출 시작...")
     doc = fitz.open(pdf_path)
+    total_pages = len(doc)
     highlighted_texts_with_context = []
-    for page in doc:
+    
+    for page_num, page in enumerate(doc, 1):
+        print(f"처리 중: {page_num}/{total_pages} 페이지")
         blocks = page.get_text("dict")["blocks"]
         lines = page.get_text("text").split('\n')
         for block in blocks:
@@ -68,31 +71,40 @@ def extract_highlighted_text_with_context(pdf_path):
                             highlighted_text = span["text"]
                             line_index = lines.index(highlighted_text) if highlighted_text in lines else -1
                             if line_index != -1:
-                                context = '\n'.join(lines[max(0, line_index-5):line_index+5])
-                                highlighted_texts_with_context.append((context, highlighted_text))
-    print("PDF에서 음영 처리된 텍스트 추출 완료")
+                                context = '\n'.join(lines[max(0, line_index-5):line_index+1])  # 5줄 위부터 현재 줄까지
+                                highlighted_texts_with_context.append((context, highlighted_text, page_num))
+
+    print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
     return highlighted_texts_with_context
 
 def compare_dataframes(df_before, highlighted_texts_with_context):
     print("데이터프레임 비교 시작...")
     matching_rows = []
 
-    for context, highlighted_text in highlighted_texts_with_context:
-        # 모든 열에 대해 검색
-        for col in df_before.columns:
-            matches = df_before[df_before[col].astype(str).str.contains(highlighted_text, na=False)].index.tolist()
-            matching_rows.extend(matches)
+    for context, highlighted_text, page_num in highlighted_texts_with_context:
+        context_lines = context.split('\n')
+        for i in range(len(df_before)):
+            match = True
+            for j, line in enumerate(context_lines):
+                if i+j >= len(df_before) or not any(str(cell).strip() in line for cell in df_before.iloc[i+j]):
+                    match = False
+                    break
+            if match:
+                matching_rows.extend(range(i, i+len(context_lines)))
+                break
 
     matching_rows = sorted(set(matching_rows))
     df_matching = df_before.loc[matching_rows].copy()
+    df_matching['일치'] = '일치'
     df_matching['하단 표 삽입요망'] = '하단 표 삽입요망'
+    df_matching['PDF_페이지'] = [page for _, _, page in highlighted_texts_with_context]
     
     print(f"데이터프레임 비교 완료. {len(matching_rows)}개의 일치하는 행 발견")
     return df_matching
 
 def main():
     print("프로그램 시작")
-    url = "https://www.kbinsure.co.kr/CG302120001.ec"
+    url = "https://www.kbinsure.co.kr/CG302290001.ec"
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_dir = "/workspaces/automation/output"
     os.makedirs(output_dir, exist_ok=True)
