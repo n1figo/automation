@@ -5,6 +5,13 @@ import re
 from openpyxl import Workbook
 import fitz  # PyMuPDF
 import os
+import torch
+from transformers import AutoProcessor, AutoModel
+from PIL import Image
+
+# CLIP model and processor loading
+processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
+model = AutoModel.from_pretrained("openai/clip-vit-base-patch32")
 
 def extract_tables_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -53,6 +60,39 @@ def is_color_highlighted(color):
     else:
         return False
 
+def detect_highlights(image):
+    width, height = image.size
+    sections = []
+    for i in range(0, height, 100):
+        for j in range(0, width, 100):
+            section = image.crop((j, i, j+100, i+100))
+            sections.append((section, (j, i, j+100, i+100)))
+    
+    section_features = []
+    for section, _ in sections:
+        inputs = processor(images=section, return_tensors="pt")
+        with torch.no_grad():
+            features = model.get_image_features(**inputs)
+        section_features.append(features)
+    
+    text_queries = ["노란색 하이라이트", "강조된 텍스트"]
+    text_features = []
+    for query in text_queries:
+        text_inputs = processor(text=query, return_tensors="pt", padding=True)
+        with torch.no_grad():
+            features = model.get_text_features(**text_inputs)
+        text_features.append(features)
+    
+    highlighted_sections = []
+    for i, section_feature in enumerate(section_features):
+        for text_feature in text_features:
+            similarity = torch.nn.functional.cosine_similarity(section_feature, text_feature)
+            if similarity > 0.5:  # Threshold
+                highlighted_sections.append(sections[i][1])
+                break
+    
+    return highlighted_sections
+
 def extract_highlighted_text_with_context(pdf_path):
     print("PDF에서 음영 처리된 텍스트 추출 시작...")
     doc = fitz.open(pdf_path)
@@ -61,6 +101,8 @@ def extract_highlighted_text_with_context(pdf_path):
     
     for page_num, page in enumerate(doc, 1):
         print(f"처리 중: {page_num}/{total_pages} 페이지")
+        
+        # Text-based extraction
         blocks = page.get_text("dict")["blocks"]
         lines = page.get_text("text").split('\n')
         for block in blocks:
@@ -71,8 +113,19 @@ def extract_highlighted_text_with_context(pdf_path):
                             highlighted_text = span["text"]
                             line_index = lines.index(highlighted_text) if highlighted_text in lines else -1
                             if line_index != -1:
-                                context = '\n'.join(lines[max(0, line_index-5):line_index+1])  # 5줄 위부터 현재 줄까지
+                                context = '\n'.join(lines[max(0, line_index-5):line_index+1])
                                 highlighted_texts_with_context.append((context, highlighted_text, page_num))
+        
+        # Image-based extraction
+        pix = page.get_pixmap()
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        highlighted_sections = detect_highlights(img)
+        
+        for section in highlighted_sections:
+            text = page.get_text("text", clip=section)
+            if text.strip():
+                context = page.get_text("text", clip=(section[0]-50, section[1]-50, section[2]+50, section[3]+50))
+                highlighted_texts_with_context.append((context, text, page_num))
 
     print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
     return highlighted_texts_with_context
@@ -104,7 +157,7 @@ def compare_dataframes(df_before, highlighted_texts_with_context):
 
 def main():
     print("프로그램 시작")
-    url = "https://www.kbinsure.co.kr/CG302290001.ec"
+    url = "https://www.kbinsure.co.kr/CG302120001.ec"
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_dir = "/workspaces/automation/output"
     os.makedirs(output_dir, exist_ok=True)
