@@ -8,6 +8,7 @@ import os
 import torch
 from transformers import AutoProcessor, AutoModel
 from PIL import Image
+import io
 
 # CLIP model and processor loading
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
@@ -60,6 +61,16 @@ def is_color_highlighted(color):
     else:
         return False
 
+def pdf_to_images(pdf_path):
+    doc = fitz.open(pdf_path)
+    images = []
+    for page in doc:
+        pix = page.get_pixmap()
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+    doc.close()
+    return images
+
 def detect_highlights(image):
     width, height = image.size
     sections = []
@@ -99,33 +110,33 @@ def extract_highlighted_text_with_context(pdf_path):
     total_pages = len(doc)
     highlighted_texts_with_context = []
     
+    # 이미지 저장을 위한 디렉토리 생성
+    output_image_dir = os.path.join("output", "images")
+    os.makedirs(output_image_dir, exist_ok=True)
+    
     for page_num, page in enumerate(doc, 1):
         print(f"처리 중: {page_num}/{total_pages} 페이지")
         
-        # Text-based extraction
-        blocks = page.get_text("dict")["blocks"]
-        lines = page.get_text("text").split('\n')
-        for block in blocks:
-            if "lines" in block:
-                for line in block["lines"]:
-                    for span in line["spans"]:
-                        if "color" in span and is_color_highlighted(span["color"]):
-                            highlighted_text = span["text"]
-                            line_index = lines.index(highlighted_text) if highlighted_text in lines else -1
-                            if line_index != -1:
-                                context = '\n'.join(lines[max(0, line_index-5):line_index+1])
-                                highlighted_texts_with_context.append((context, highlighted_text, page_num))
-        
-        # Image-based extraction
         pix = page.get_pixmap()
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         highlighted_sections = detect_highlights(img)
         
-        for section in highlighted_sections:
-            text = page.get_text("text", clip=section)
+        for i, section in enumerate(highlighted_sections):
+            # 음영 처리된 부분 위로 5행을 포함하여 여유 있게 캡처
+            x0, y0, x1, y1 = section
+            y0 = max(0, y0 - 100)  # 위로 100 픽셀 (약 5행) 확장
+            
+            highlight_img = img.crop((x0, y0, x1, y1))
+            
+            # 이미지 저장
+            image_filename = f"page_{page_num}_highlight_{i+1}.png"
+            image_path = os.path.join(output_image_dir, image_filename)
+            highlight_img.save(image_path)
+            
+            text = page.get_text("text", clip=(x0, y0, x1, y1))
             if text.strip():
-                context = page.get_text("text", clip=(section[0]-50, section[1]-50, section[2]+50, section[3]+50))
-                highlighted_texts_with_context.append((context, text, page_num))
+                context = page.get_text("text", clip=(x0-50, y0-50, x1+50, y1+50))
+                highlighted_texts_with_context.append((context, text, page_num, image_path))
 
     print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
     return highlighted_texts_with_context
@@ -134,7 +145,7 @@ def compare_dataframes(df_before, highlighted_texts_with_context):
     print("데이터프레임 비교 시작...")
     matching_rows = []
 
-    for context, highlighted_text, page_num in highlighted_texts_with_context:
+    for context, highlighted_text, page_num, image_path in highlighted_texts_with_context:
         context_lines = context.split('\n')
         for i in range(len(df_before)):
             match = True
@@ -150,7 +161,8 @@ def compare_dataframes(df_before, highlighted_texts_with_context):
     df_matching = df_before.loc[matching_rows].copy()
     df_matching['일치'] = '일치'
     df_matching['하단 표 삽입요망'] = '하단 표 삽입요망'
-    df_matching['PDF_페이지'] = [page for _, _, page in highlighted_texts_with_context]
+    df_matching['PDF_페이지'] = [page for _, _, page, _ in highlighted_texts_with_context]
+    df_matching['이미지_경로'] = [path for _, _, _, path in highlighted_texts_with_context]
     
     print(f"데이터프레임 비교 완료. {len(matching_rows)}개의 일치하는 행 발견")
     return df_matching
