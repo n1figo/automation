@@ -21,11 +21,14 @@ def extract_tables_from_html(html_content):
     
     return tables
 
-def process_table(table):
+def process_table(table, table_index):
     headers = [th.text.strip() for th in table.find_all('th')]
     if not headers:
         headers = [td.text.strip() for td in table.find('tr').find_all('td')]
-    headers.append('변경 여부')
+    
+    # 고유한 접두사를 추가하여 컬럼 이름을 고유하게 만듭니다
+    headers = [f"Table_{table_index}_{header}" for header in headers]
+    headers.append(f"Table_{table_index}_변경_여부")
     
     rows = []
     for tr in table.find_all('tr')[1:]:  # Skip the header row
@@ -42,7 +45,50 @@ def process_table(table):
     
     return headers, rows
 
-# ... (나머지 함수들은 그대로 유지)
+def is_color_highlighted(color):
+    if isinstance(color, (tuple, list)) and len(color) == 3:
+        return color not in [(1, 1, 1), (0.9, 0.9, 0.9)] and any(c < 0.9 for c in color)
+    elif isinstance(color, int):
+        return 0 < color < 230
+    else:
+        return False
+
+def extract_highlighted_text_with_context(pdf_path):
+    print("PDF에서 음영 처리된 텍스트 추출 시작...")
+    doc = fitz.open(pdf_path)
+    highlighted_texts_with_context = []
+    for page in doc:
+        blocks = page.get_text("dict")["blocks"]
+        lines = page.get_text("text").split('\n')
+        for block in blocks:
+            if "lines" in block:
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        if "color" in span and is_color_highlighted(span["color"]):
+                            highlighted_text = span["text"]
+                            line_index = lines.index(highlighted_text) if highlighted_text in lines else -1
+                            if line_index != -1:
+                                context = '\n'.join(lines[max(0, line_index-5):line_index+5])
+                                highlighted_texts_with_context.append((context, highlighted_text))
+    print("PDF에서 음영 처리된 텍스트 추출 완료")
+    return highlighted_texts_with_context
+
+def compare_dataframes(df_before, highlighted_texts_with_context):
+    print("데이터프레임 비교 시작...")
+    matching_rows = []
+
+    for context, highlighted_text in highlighted_texts_with_context:
+        # 모든 열에 대해 검색
+        for col in df_before.columns:
+            matches = df_before[df_before[col].astype(str).str.contains(highlighted_text, na=False)].index.tolist()
+            matching_rows.extend(matches)
+
+    matching_rows = sorted(set(matching_rows))
+    df_matching = df_before.loc[matching_rows].copy()
+    df_matching['하단 표 삽입요망'] = '하단 표 삽입요망'
+    
+    print(f"데이터프레임 비교 완료. {len(matching_rows)}개의 일치하는 행 발견")
+    return df_matching
 
 def main():
     print("프로그램 시작")
@@ -59,8 +105,8 @@ def main():
     
     # 추출한 표를 DataFrame으로 변환
     df_list = []
-    for table in tables:
-        headers, data = process_table(table)
+    for i, table in enumerate(tables):
+        headers, data = process_table(table, i)
         if data:  # 데이터가 있는 경우에만 DataFrame 생성
             df_table = pd.DataFrame(data, columns=headers)
             df_list.append(df_table)
@@ -69,7 +115,10 @@ def main():
         print("추출된 데이터가 없습니다. URL을 확인해주세요.")
         return
 
-    df_before = pd.concat(df_list, ignore_index=True)
+    df_before = pd.concat(df_list, axis=1)
+    print("Combined DataFrame:")
+    print(df_before.head())
+    print(f"Shape of combined DataFrame: {df_before.shape}")
 
     highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path)
 
