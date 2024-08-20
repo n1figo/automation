@@ -7,7 +7,6 @@ import fitz  # PyMuPDF
 import os
 from PIL import Image
 import numpy as np
-from skimage import measure
 
 def extract_tables_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -49,53 +48,45 @@ def process_table(table, table_index):
     return headers, rows
 
 def is_color_highlighted(color):
-    if isinstance(color, (tuple, list)) and len(color) == 3:
-        # 회색이나 흰색이 아닌 모든 색상을 하이라이트로 간주
-        return not all(0.9 <= c <= 1.0 for c in color)
-    elif isinstance(color, int):
-        return color < 230
-    else:
+    r, g, b = color
+    # 흰색, 회색, 검정색 제외
+    if r == g == b:  # 회색 계열
         return False
-
-def pdf_to_images(pdf_path, max_pages=20):
-    doc = fitz.open(pdf_path)
-    images = []
-    for page in doc[:max_pages]:
-        pix = page.get_pixmap()
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        images.append(img)
-    doc.close()
-    return images
+    # 밝은 색상만 하이라이트로 간주
+    return max(r, g, b) > 200 and (max(r, g, b) - min(r, g, b)) > 30
 
 def detect_highlights(image):
-    # Convert image to numpy array
+    width, height = image.size
     img_array = np.array(image)
     
-    # Define color ranges for highlighting (excluding white and gray)
-    lower_bound = np.array([0, 0, 0])
-    upper_bound = np.array([250, 250, 250])
-    
-    # Create a mask of highlighted areas
-    mask = np.any((img_array < lower_bound) | (img_array > upper_bound), axis=-1)
-    
-    # Find contours of highlighted areas
-    contours = measure.find_contours(mask, 0.5)
+    highlighted_rows = set()
+    for y in range(height):
+        for x in range(width):
+            if is_color_highlighted(img_array[y, x]):
+                highlighted_rows.add(y)
     
     highlighted_sections = []
-    for contour in contours:
-        y0, x0 = contour.min(axis=0)
-        y1, x1 = contour.max(axis=0)
-        highlighted_sections.append((int(x0), int(y0), int(x1), int(y1)))
+    start_row = None
+    for row in range(height):
+        if row in highlighted_rows:
+            if start_row is None:
+                start_row = max(0, row - 10 * image.size[1] // height)  # 약 10줄 위
+        elif start_row is not None:
+            end_row = min(height, row + 10 * image.size[1] // height)  # 약 10줄 아래
+            highlighted_sections.append((0, start_row, width, end_row))
+            start_row = None
+    
+    if start_row is not None:
+        highlighted_sections.append((0, start_row, width, height))
     
     return highlighted_sections
 
-def extract_highlighted_text_with_context(pdf_path, max_pages=20):
+def extract_highlighted_text_with_context(pdf_path, max_pages=10):
     print("PDF에서 음영 처리된 텍스트 추출 시작...")
     doc = fitz.open(pdf_path)
     total_pages = min(len(doc), max_pages)
     highlighted_texts_with_context = []
     
-    # 이미지 저장을 위한 디렉토리 생성
     output_image_dir = os.path.join("output", "images")
     os.makedirs(output_image_dir, exist_ok=True)
     
@@ -109,18 +100,16 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
         
         for i, section in enumerate(highlighted_sections):
             x0, y0, x1, y1 = section
-            y0 = max(0, y0 - 100)  # 위로 100 픽셀 (약 5행) 확장
             
-            highlight_img = img.crop((x0, y0, x1, y1))
+            highlight_img = img.crop(section)
             
-            # 이미지 저장
             image_filename = f"page_{page_num + 1}_highlight_{i+1}.png"
             image_path = os.path.join(output_image_dir, image_filename)
             highlight_img.save(image_path)
             
-            text = page.get_text("text", clip=(x0, y0, x1, y1))
+            text = page.get_text("text", clip=section)
             if text.strip():
-                context = page.get_text("text", clip=(x0-50, y0-50, x1+50, y1+50))
+                context = page.get_text("text", clip=section)
                 highlighted_texts_with_context.append((context, text, page_num + 1, image_path))
 
     print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
