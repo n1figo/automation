@@ -5,14 +5,9 @@ import re
 from openpyxl import Workbook
 import fitz  # PyMuPDF
 import os
-import torch
-from transformers import AutoProcessor, AutoModel
 from PIL import Image
-import io
-
-# CLIP model and processor loading
-processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
-model = AutoModel.from_pretrained("openai/clip-vit-base-patch32")
+import numpy as np
+from skimage import measure
 
 def extract_tables_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -55,16 +50,17 @@ def process_table(table, table_index):
 
 def is_color_highlighted(color):
     if isinstance(color, (tuple, list)) and len(color) == 3:
-        return color not in [(1, 1, 1), (0.9, 0.9, 0.9)] and any(c < 0.9 for c in color)
+        # 회색이나 흰색이 아닌 모든 색상을 하이라이트로 간주
+        return not all(0.9 <= c <= 1.0 for c in color)
     elif isinstance(color, int):
-        return 0 < color < 230
+        return color < 230
     else:
         return False
 
-def pdf_to_images(pdf_path):
+def pdf_to_images(pdf_path, max_pages=20):
     doc = fitz.open(pdf_path)
     images = []
-    for page in doc:
+    for page in doc[:max_pages]:
         pix = page.get_pixmap()
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         images.append(img)
@@ -72,71 +68,60 @@ def pdf_to_images(pdf_path):
     return images
 
 def detect_highlights(image):
-    width, height = image.size
-    sections = []
-    for i in range(0, height, 100):
-        for j in range(0, width, 100):
-            section = image.crop((j, i, j+100, i+100))
-            sections.append((section, (j, i, j+100, i+100)))
+    # Convert image to numpy array
+    img_array = np.array(image)
     
-    section_features = []
-    for section, _ in sections:
-        inputs = processor(images=section, return_tensors="pt")
-        with torch.no_grad():
-            features = model.get_image_features(**inputs)
-        section_features.append(features)
+    # Define color ranges for highlighting (excluding white and gray)
+    lower_bound = np.array([0, 0, 0])
+    upper_bound = np.array([250, 250, 250])
     
-    text_queries = ["노란색 하이라이트", "강조된 텍스트"]
-    text_features = []
-    for query in text_queries:
-        text_inputs = processor(text=query, return_tensors="pt", padding=True)
-        with torch.no_grad():
-            features = model.get_text_features(**text_inputs)
-        text_features.append(features)
+    # Create a mask of highlighted areas
+    mask = np.any((img_array < lower_bound) | (img_array > upper_bound), axis=-1)
+    
+    # Find contours of highlighted areas
+    contours = measure.find_contours(mask, 0.5)
     
     highlighted_sections = []
-    for i, section_feature in enumerate(section_features):
-        for text_feature in text_features:
-            similarity = torch.nn.functional.cosine_similarity(section_feature, text_feature)
-            if similarity > 0.5:  # Threshold
-                highlighted_sections.append(sections[i][1])
-                break
+    for contour in contours:
+        y0, x0 = contour.min(axis=0)
+        y1, x1 = contour.max(axis=0)
+        highlighted_sections.append((int(x0), int(y0), int(x1), int(y1)))
     
     return highlighted_sections
 
-def extract_highlighted_text_with_context(pdf_path):
+def extract_highlighted_text_with_context(pdf_path, max_pages=20):
     print("PDF에서 음영 처리된 텍스트 추출 시작...")
     doc = fitz.open(pdf_path)
-    total_pages = len(doc)
+    total_pages = min(len(doc), max_pages)
     highlighted_texts_with_context = []
     
     # 이미지 저장을 위한 디렉토리 생성
     output_image_dir = os.path.join("output", "images")
     os.makedirs(output_image_dir, exist_ok=True)
     
-    for page_num, page in enumerate(doc, 1):
-        print(f"처리 중: {page_num}/{total_pages} 페이지")
+    for page_num in range(total_pages):
+        print(f"처리 중: {page_num + 1}/{total_pages} 페이지")
+        page = doc[page_num]
         
         pix = page.get_pixmap()
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         highlighted_sections = detect_highlights(img)
         
         for i, section in enumerate(highlighted_sections):
-            # 음영 처리된 부분 위로 5행을 포함하여 여유 있게 캡처
             x0, y0, x1, y1 = section
             y0 = max(0, y0 - 100)  # 위로 100 픽셀 (약 5행) 확장
             
             highlight_img = img.crop((x0, y0, x1, y1))
             
             # 이미지 저장
-            image_filename = f"page_{page_num}_highlight_{i+1}.png"
+            image_filename = f"page_{page_num + 1}_highlight_{i+1}.png"
             image_path = os.path.join(output_image_dir, image_filename)
             highlight_img.save(image_path)
             
             text = page.get_text("text", clip=(x0, y0, x1, y1))
             if text.strip():
                 context = page.get_text("text", clip=(x0-50, y0-50, x1+50, y1+50))
-                highlighted_texts_with_context.append((context, text, page_num, image_path))
+                highlighted_texts_with_context.append((context, text, page_num + 1, image_path))
 
     print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
     return highlighted_texts_with_context
@@ -197,7 +182,7 @@ def main():
     print(df_before.head())
     print(f"Shape of combined DataFrame: {df_before.shape}")
 
-    highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path)
+    highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
 
     if not df_before.empty and highlighted_texts_with_context:
         df_matching = compare_dataframes(df_before, highlighted_texts_with_context)
