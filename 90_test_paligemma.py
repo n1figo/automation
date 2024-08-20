@@ -1,19 +1,35 @@
+import os
+from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
 import fitz  # PyMuPDF
 from PIL import Image
 import io
-import os
 import torch
 from transformers import AutoProcessor, PaliGemmaForConditionalGeneration
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from huggingface_hub import login
+
+# .env 파일 로드
+load_dotenv()
+
+# Hugging Face API 토큰 설정
+hf_token = os.getenv('HUGGINGFACE_TOKEN')
+if not hf_token:
+    raise ValueError("HUGGINGFACE_TOKEN이 .env 파일에 설정되지 않았습니다.")
+
+# Hugging Face에 로그인
+login(hf_token)
 
 # PaLIGEMMA 모델 및 프로세서 로드
 model_id = "google/paligemma-3b-mix-224"
-model = PaliGemmaForConditionalGeneration.from_pretrained(model_id).eval()
-processor = AutoProcessor.from_pretrained(model_id)
+try:
+    model = PaliGemmaForConditionalGeneration.from_pretrained(model_id).eval()
+    processor = AutoProcessor.from_pretrained(model_id)
+except Exception as e:
+    raise ValueError(f"모델 로딩 중 오류 발생: {str(e)}")
 
 def extract_content_from_url(url):
     chrome_options = Options()
