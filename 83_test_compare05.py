@@ -1,4 +1,5 @@
 import requests
+from bs4 import BeautifulSoup
 import pandas as pd
 import fitz  # PyMuPDF
 import os
@@ -6,15 +7,55 @@ from PIL import Image
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-from io import StringIO
 
-def extract_tables_from_html(url):
+def get_full_html(url, output_dir):
     response = requests.get(url)
-    html_io = StringIO(response.text)
-    dfs = pd.read_html(html_io)
+    response.raise_for_status()
+    html_content = response.text
     
-    print(f"추출된 테이블 수: {len(dfs)}")
-    return dfs
+    # HTML을 txt 파일로 저장
+    html_file_path = os.path.join(output_dir, "source.txt")
+    with open(html_file_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    
+    print(f"HTML 소스가 {html_file_path}에 저장되었습니다.")
+    return html_file_path
+
+def extract_tables_from_html(html_file_path):
+    try:
+        with open(html_file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        # "보장내용"과 "선택약관" 사이의 내용 추출
+        soup = BeautifulSoup(html_content, 'html.parser')
+        start_tag = soup.find(string="보장내용")
+        end_tag = soup.find(string="선택약관")
+        
+        if not start_tag or not end_tag:
+            print("'보장내용' 또는 '선택약관'을 찾지 못했습니다.")
+            print(f"HTML 내용 일부: {html_content[:1000]}...")  # 디버깅을 위해 HTML 내용의 일부를 출력
+            return []
+        
+        relevant_content = start_tag.find_all_next(lambda tag: tag.string != "선택약관")
+        
+        # 추출된 HTML에서 표 찾기
+        tables = [tag for tag in relevant_content if tag.name == 'table']
+        
+        if not tables:
+            print("관련 섹션에서 표를 찾지 못했습니다.")
+            print(f"관련 HTML 내용: {relevant_content}")  # 디버깅을 위해 관련 HTML 내용을 출력
+            return []
+        
+        # 표를 DataFrame으로 변환
+        dfs = [pd.read_html(str(table))[0] for table in tables]
+        print(f"추출된 테이블 수: {len(dfs)}")
+        return dfs
+    except Exception as e:
+        print(f"표 추출 중 오류 발생: {str(e)}")
+        print("상세 오류 정보:")
+        import traceback
+        print(traceback.format_exc())
+        return []
 
 def process_tables(dfs):
     all_data = []
@@ -187,21 +228,26 @@ def save_original_tables_to_excel(dfs, output_excel_path):
 def main():
     print("프로그램 시작")
     try:
-        url = "https://www.kbinsure.co.kr/CG302120001.ec"
+        url = "https://www.kbinsure.co.kr/CG302290001.ec"
         pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
         output_dir = "/workspaces/automation/output"
         os.makedirs(output_dir, exist_ok=True)
         output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
         original_excel_path = os.path.join(output_dir, "변경전.xlsx")
 
-        dfs = extract_tables_from_html(url)
+        html_file_path = get_full_html(url, output_dir)
+        dfs = extract_tables_from_html(html_file_path)
         if not dfs:
-            print("표 추출에 실패했습니다. URL을 확인해주세요.")
+            print("표 추출에 실패했습니다. HTML 파일을 확인해주세요.")
             return
 
         save_original_tables_to_excel(dfs, original_excel_path)
 
         df_before = process_tables(dfs)
+        if df_before.empty:
+            print("처리된 데이터가 없습니다.")
+            return
+
         print("Combined DataFrame:")
         print(df_before.head())
         print(f"Shape of combined DataFrame: {df_before.shape}")
@@ -216,6 +262,9 @@ def main():
 
     except Exception as e:
         print(f"오류 발생: {str(e)}")
+        print("상세 오류 정보:")
+        import traceback
+        print(traceback.format_exc())
     
     print("프로그램 종료")
 
