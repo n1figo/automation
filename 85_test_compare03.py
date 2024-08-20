@@ -119,10 +119,18 @@ def compare_dataframes(df_before, highlighted_texts_with_context):
 
     matching_rows = sorted(set(matching_rows))
     df_matching = df_before.loc[matching_rows].copy()
+    
+    # 새 열 추가 (기본값으로 초기화)
     df_matching['일치'] = '일치'
     df_matching['하단 표 삽입요망'] = '하단 표 삽입요망'
-    df_matching['PDF_페이지'] = [page for _, _, page, _ in highlighted_texts_with_context]
-    df_matching['이미지_경로'] = [path for _, _, _, path in highlighted_texts_with_context]
+    df_matching['PDF_페이지'] = ''
+    df_matching['이미지_경로'] = ''
+    
+    # 사용 가능한 데이터로 열 업데이트
+    for i, (_, _, page, path) in enumerate(highlighted_texts_with_context):
+        if i < len(df_matching):
+            df_matching.loc[df_matching.index[i], 'PDF_페이지'] = page
+            df_matching.loc[df_matching.index[i], '이미지_경로'] = path
     
     print(f"데이터프레임 비교 완료. {len(matching_rows)}개의 일치하는 행 발견")
     return df_matching
