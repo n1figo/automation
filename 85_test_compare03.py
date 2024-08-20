@@ -2,22 +2,20 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
-from openpyxl import Workbook
 import fitz  # PyMuPDF
 import os
 from PIL import Image
 import numpy as np
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 def extract_tables_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
-    
     special_section = soup.find('p', string=re.compile(r'선택특약|선택약관'))
-    
     if special_section:
         tables = special_section.find_all_next('table', class_='tb_default03')
     else:
         tables = soup.find_all('table', class_='tb_default03')
-    
     return tables
 
 def process_table(table, table_index):
@@ -37,11 +35,57 @@ def process_table(table, table_index):
             row.append('')
             rows.append(row)
     
+    print(f"Table {table_index}:")
     print(f"Headers: {headers}")
+    print(f"Number of rows: {len(rows)}")
     print(f"First row: {rows[0] if rows else 'No rows'}")
     print(f"Number of headers: {len(headers)}, Number of columns in first row: {len(rows[0]) if rows else 0}")
+    print("---")
     
     return headers, rows
+    
+
+def process_tables(tables):
+    all_data = []
+    all_columns = set()
+    for i, table in enumerate(tables):
+        headers, data = process_table(table, i)
+        
+        # 중복된 컬럼 이름 처리
+        new_headers = []
+        for h in headers:
+            if h in all_columns:
+                j = 1
+                while f"{h}_{j}" in all_columns:
+                    j += 1
+                h = f"{h}_{j}"
+            new_headers.append(h)
+            all_columns.add(h)
+        
+        df = pd.DataFrame(data, columns=new_headers)
+        
+        # 구체적인 항목 추가 (예시)
+        df['구체적인_항목'] = f'Table_{i+1}_상세정보'
+        all_columns.add('구체적인_항목')
+        
+        # 고유한 인덱스 생성
+        df.index = [f'Table_{i+1}_{j}' for j in range(len(df))]
+        
+        all_data.append(df)
+        
+        print(f"Table {i+1}:")
+        print(f"Columns: {df.columns.tolist()}")
+        print(f"Shape: {df.shape}")
+        print("---")
+    
+    # concat 시 인덱스 재설정
+    result = pd.concat(all_data, axis=0).reset_index(drop=True)
+    
+    print("Final DataFrame:")
+    print(f"Columns: {result.columns.tolist()}")
+    print(f"Shape: {result.shape}")
+    
+    return result
 
 def is_color_highlighted(color):
     r, g, b = color
@@ -101,23 +145,6 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
     print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
     return highlighted_texts_with_context
 
-import pandas as pd
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-
-def process_tables(tables):
-    all_data = []
-    for i, table in enumerate(tables):
-        headers, data = process_table(table, i)
-        df = pd.DataFrame(data, columns=headers)
-        
-        # 구체적인 항목 추가 (예시)
-        df['구체적인_항목'] = f'Table_{i+1}_상세정보'
-        
-        all_data.append(df)
-    
-    return pd.concat(all_data, axis=0, ignore_index=True)
-
 def compare_dataframes(df_before, highlighted_texts_with_context):
     print("데이터프레임 비교 시작...")
     matching_rows = []
@@ -165,31 +192,35 @@ def save_to_excel(df, output_excel_path):
 
 def main():
     print("프로그램 시작")
-    url = "https://www.kbinsure.co.kr/CG302120001.ec"
-    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
-    output_dir = "/workspaces/automation/output"
-    os.makedirs(output_dir, exist_ok=True)
-    output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
+    try:
+        url = "https://www.kbinsure.co.kr/CG302120001.ec"
+        pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+        output_dir = "/workspaces/automation/output"
+        os.makedirs(output_dir, exist_ok=True)
+        output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
 
-    # HTML에서 표 추출
-    response = requests.get(url)
-    html_content = response.text
-    tables = extract_tables_from_html(html_content)
+        # HTML에서 표 추출
+        response = requests.get(url)
+        html_content = response.text
+        tables = extract_tables_from_html(html_content)
+        
+        # 모든 표를 하나의 DataFrame으로 처리
+        df_before = process_tables(tables)
+        print("Combined DataFrame:")
+        print(df_before.head())
+        print(f"Shape of combined DataFrame: {df_before.shape}")
+
+        highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
+
+        if not df_before.empty and highlighted_texts_with_context:
+            df_matching = compare_dataframes(df_before, highlighted_texts_with_context)
+            save_to_excel(df_matching, output_excel_path)
+        else:
+            print("표 추출 또는 음영 처리된 텍스트 추출에 실패했습니다. URL과 PDF를 확인해주세요.")
+
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
     
-    # 모든 표를 하나의 DataFrame으로 처리
-    df_before = process_tables(tables)
-    print("Combined DataFrame:")
-    print(df_before.head())
-    print(f"Shape of combined DataFrame: {df_before.shape}")
-
-    highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
-
-    if not df_before.empty and highlighted_texts_with_context:
-        df_matching = compare_dataframes(df_before, highlighted_texts_with_context)
-        save_to_excel(df_matching, output_excel_path)
-    else:
-        print("표 추출 또는 음영 처리된 텍스트 추출에 실패했습니다. URL과 PDF를 확인해주세요.")
-
     print("프로그램 종료")
 
 if __name__ == "__main__":
