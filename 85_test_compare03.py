@@ -101,6 +101,23 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
     print(f"PDF에서 음영 처리된 텍스트 추출 완료 (총 {total_pages} 페이지)")
     return highlighted_texts_with_context
 
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+def process_tables(tables):
+    all_data = []
+    for i, table in enumerate(tables):
+        headers, data = process_table(table, i)
+        df = pd.DataFrame(data, columns=headers)
+        
+        # 구체적인 항목 추가 (예시)
+        df['구체적인_항목'] = f'Table_{i+1}_상세정보'
+        
+        all_data.append(df)
+    
+    return pd.concat(all_data, axis=0, ignore_index=True)
+
 def compare_dataframes(df_before, highlighted_texts_with_context):
     print("데이터프레임 비교 시작...")
     matching_rows = []
@@ -135,30 +152,32 @@ def compare_dataframes(df_before, highlighted_texts_with_context):
     print(f"데이터프레임 비교 완료. {len(matching_rows)}개의 일치하는 행 발견")
     return df_matching
 
+def save_to_excel(df, output_excel_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "비교 결과"
+
+    for r in dataframe_to_rows(df, index=False, header=True):
+        ws.append(r)
+
+    wb.save(output_excel_path)
+    print(f"결과가 {output_excel_path}에 저장되었습니다.")
+
 def main():
     print("프로그램 시작")
     url = "https://www.kbinsure.co.kr/CG302120001.ec"
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_dir = "/workspaces/automation/output"
     os.makedirs(output_dir, exist_ok=True)
-    output_excel_path = os.path.join(output_dir, "matching_rows.xlsx")
+    output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
 
+    # HTML에서 표 추출
     response = requests.get(url)
     html_content = response.text
     tables = extract_tables_from_html(html_content)
     
-    df_list = []
-    for i, table in enumerate(tables):
-        headers, data = process_table(table, i)
-        if data:
-            df_table = pd.DataFrame(data, columns=headers)
-            df_list.append(df_table)
-
-    if not df_list:
-        print("추출된 데이터가 없습니다. URL을 확인해주세요.")
-        return
-
-    df_before = pd.concat(df_list, axis=1)
+    # 모든 표를 하나의 DataFrame으로 처리
+    df_before = process_tables(tables)
     print("Combined DataFrame:")
     print(df_before.head())
     print(f"Shape of combined DataFrame: {df_before.shape}")
@@ -167,8 +186,7 @@ def main():
 
     if not df_before.empty and highlighted_texts_with_context:
         df_matching = compare_dataframes(df_before, highlighted_texts_with_context)
-        df_matching.to_excel(output_excel_path, index=False)
-        print(f"일치하는 행이 포함된 엑셀 파일이 저장되었습니다: {output_excel_path}")
+        save_to_excel(df_matching, output_excel_path)
     else:
         print("표 추출 또는 음영 처리된 텍스트 추출에 실패했습니다. URL과 PDF를 확인해주세요.")
 
