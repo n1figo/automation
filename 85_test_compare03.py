@@ -86,7 +86,7 @@ def extract_highlighted_text_with_context(pdf_path):
 
 # Example usage
 if __name__ == "__main__":
-    pdf_path = "/path/to/your/pdf/file.pdf"
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     results = extract_highlighted_text_with_context(pdf_path)
     for context, highlighted_text, page_num in results:
         print(f"Page {page_num + 1}:")
