@@ -16,7 +16,6 @@ async def get_full_html(url, output_dir):
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle")
         
-        # Execute JavaScript to expand all hidden elements
         await page.evaluate("""
             () => {
                 const expandElements = (elements) => {
@@ -51,7 +50,7 @@ def extract_tables_from_html(html_file_path):
         
         if not tables:
             print("No tables found in the HTML content.")
-            print(f"HTML content preview: {html_content[:1000]}...")  # Print first 1000 characters for debugging
+            print(f"HTML content preview: {html_content[:1000]}...")
             return []
         
         dfs = [pd.read_html(StringIO(str(table)))[0] for table in tables]
@@ -64,6 +63,35 @@ def extract_tables_from_html(html_file_path):
         print(traceback.format_exc())
         return []
 
+def extract_specific_table(html_file_path):
+    try:
+        with open(html_file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        section = soup.find('strong', text='◇ 상해 관련 특별약관(자세한 사항은 반드시 약관을 참고하시기 바랍니다.)')
+        if section:
+            table = section.find_next('table')
+            if table:
+                df = pd.read_html(StringIO(str(table)))[0]
+                df.columns = ['보장명', '지급사유', '지급금액']
+                df = df.dropna(how='all').reset_index(drop=True)
+                print("Extracted specific table successfully.")
+                return df
+            else:
+                print("Specific table not found.")
+                return None
+        else:
+            print("Specific section not found.")
+            return None
+    except Exception as e:
+        print(f"Error extracting specific table: {str(e)}")
+        print("Detailed error information:")
+        import traceback
+        print(traceback.format_exc())
+        return None
+
 def save_original_tables_to_excel(dfs, output_excel_path):
     wb = Workbook()
     ws = wb.active
@@ -71,30 +99,43 @@ def save_original_tables_to_excel(dfs, output_excel_path):
 
     row = 1
     for i, df in enumerate(dfs, start=1):
-        # Write table name
         ws.cell(row=row, column=1, value=f'Table_{i}')
         row += 1
 
-        # Handle MultiIndex columns
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [' '.join(col).strip() for col in df.columns.values]
 
-        # Write headers
         for col, header in enumerate(df.columns, start=1):
             ws.cell(row=row, column=col, value=header)
         row += 1
 
-        # Write data
         for _, data_row in df.iterrows():
             for col, value in enumerate(data_row, start=1):
                 ws.cell(row=row, column=col, value=value)
             row += 1
 
-        # Space between tables
         row += 2
 
     wb.save(output_excel_path)
     print(f"Original tables have been saved to {output_excel_path}")
+
+def save_specific_table_to_excel(df, output_excel_path):
+    if df is not None and not df.empty:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "상해관련 특별약관"
+
+        for col, header in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=col, value=header)
+
+        for row, data in df.iterrows():
+            for col, value in enumerate(data, start=1):
+                ws.cell(row=row+2, column=col, value=value)
+
+        wb.save(output_excel_path)
+        print(f"Specific table has been saved to {output_excel_path}")
+    else:
+        print("No data to save.")
 
 def process_tables(dfs):
     all_data = []
@@ -241,24 +282,27 @@ async def main():
         os.makedirs(output_dir, exist_ok=True)
         output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
         original_excel_path = os.path.join(output_dir, "변경전.xlsx")
+        specific_table_excel_path = os.path.join(output_dir, "상해관련_특별약관.xlsx")
 
         html_file_path = await get_full_html(url, output_dir)
+        
+        # Extract and save all tables
         dfs = extract_tables_from_html(html_file_path)
-        if not dfs:
+        if dfs:
+            save_original_tables_to_excel(dfs, original_excel_path)
+            df_before = process_tables(dfs)
+        else:
             print("Failed to extract tables. Please check the HTML file.")
             return
 
-        save_original_tables_to_excel(dfs, original_excel_path)
+        # Extract and save specific table
+        specific_df = extract_specific_table(html_file_path)
+        if specific_df is not None:
+            save_specific_table_to_excel(specific_df, specific_table_excel_path)
+        else:
+            print("Failed to extract the specific table.")
 
-        df_before = process_tables(dfs)
-        if df_before.empty:
-            print("No data processed.")
-            return
-
-        print("Combined DataFrame:")
-        print(df_before.head())
-        print(f"Shape of combined DataFrame: {df_before.shape}")
-
+        # Compare with PDF
         highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
 
         if not df_before.empty and highlighted_texts_with_context:
