@@ -7,6 +7,7 @@ from PIL import Image
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
+from bs4 import BeautifulSoup
 
 async def get_full_html(url, output_dir):
     async with async_playwright() as p:
