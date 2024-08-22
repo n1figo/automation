@@ -9,6 +9,7 @@ from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from bs4 import BeautifulSoup
 from io import StringIO
+import re
 
 async def get_full_html(url, output_dir):
     async with async_playwright() as p:
@@ -70,17 +71,23 @@ def extract_specific_table(html_file_path):
 
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        section = soup.find('strong', text='◇ 상해 관련 특별약관(자세한 사항은 반드시 약관을 참고하시기 바랍니다.)')
+        # 정규표현식을 사용하여 유사한 텍스트를 찾습니다
+        pattern = re.compile(r'상해.*특별약관.*')
+        section = soup.find(string=pattern)
+        
         if section:
+            # 섹션을 찾았다면, 가장 가까운 테이블을 찾습니다
             table = section.find_next('table')
             if table:
                 df = pd.read_html(StringIO(str(table)))[0]
-                df.columns = ['보장명', '지급사유', '지급금액']
+                # 열 이름 설정
+                if len(df.columns) >= 3:
+                    df.columns = ['보장명', '지급사유', '지급금액']
                 df = df.dropna(how='all').reset_index(drop=True)
                 print("Extracted specific table successfully.")
                 return df
             else:
-                print("Specific table not found.")
+                print("Specific table not found near the section.")
                 return None
         else:
             print("Specific section not found.")
