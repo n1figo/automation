@@ -192,7 +192,7 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
 
 def compare_dataframes(df_before, texts_with_context, output_dir):
     print("Starting comparison of dataframes...")
-    df_result = df_before.copy()
+    df_result = df_before.copy() if not df_before.empty else pd.DataFrame(columns=['table_info'])
     df_result['PDF_페이지'] = ''
     df_result['이미지_경로'] = ''
     df_result['상태'] = '유지'
@@ -232,22 +232,33 @@ def save_to_excel(df, output_excel_path):
     ws.title = "Comparison Results"
 
     row = 1
-    for table_info in df['table_info'].unique():
-        table_df = df[df['table_info'] == table_info]
-        
-        ws.cell(row=row, column=1, value=table_info)
-        row += 1
-        
-        for col, header in enumerate(table_df.columns, start=1):
+    if 'table_info' in df.columns:
+        for table_info in df['table_info'].unique():
+            table_df = df[df['table_info'] == table_info]
+            
+            ws.cell(row=row, column=1, value=table_info)
+            row += 1
+            
+            for col, header in enumerate(table_df.columns, start=1):
+                ws.cell(row=row, column=col, value=header)
+            row += 1
+            
+            for _, data_row in table_df.iterrows():
+                for col, value in enumerate(data_row, start=1):
+                    ws.cell(row=row, column=col, value=value)
+                row += 1
+            
+            row += 2
+    else:
+        # 'table_info' 열이 없는 경우 전체 DataFrame을 그대로 저장
+        for col, header in enumerate(df.columns, start=1):
             ws.cell(row=row, column=col, value=header)
         row += 1
         
-        for _, data_row in table_df.iterrows():
+        for _, data_row in df.iterrows():
             for col, value in enumerate(data_row, start=1):
                 ws.cell(row=row, column=col, value=value)
             row += 1
-        
-        row += 2
 
     wb.save(output_excel_path)
     print(f"Results have been saved to {output_excel_path}")
@@ -278,6 +289,7 @@ async def main():
 
         if texts_with_context:
             df_matching = compare_dataframes(df_before, texts_with_context, output_dir)
+            print("Columns in df_matching:", df_matching.columns)
             save_to_excel(df_matching, output_excel_path)
         else:
             print("Failed to extract highlighted text from PDF. Please check the PDF file.")
