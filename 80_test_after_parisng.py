@@ -87,9 +87,10 @@ def process_tables_with_status(dfs):
 
 def is_color_highlighted(color):
     r, g, b = color
-    if r == g == b:
-        return False
-    return max(r, g, b) > 200 or (max(r, g, b) - min(r, g, b)) > 30
+    return (r > 200 and g < 100 and b < 100) or  # Red
+           (r < 100 and g < 100 and b > 200) or  # Blue
+           (r > 200 and g < 150 and b > 200) or  # Pink
+           (r > 100 and g < 100 and b > 200)     # Purple
 
 def detect_highlights_and_colors(image):
     width, height = image.size
@@ -100,19 +101,17 @@ def detect_highlights_and_colors(image):
     for y in range(height):
         for x in range(width):
             color = img_array[y, x]
-            if is_color_highlighted(color):
+            if color[0] > 200 and color[1] > 200 and color[2] < 100:  # Yellow highlight
                 highlighted_rows.add(y)
-            elif not all(c == color[0] for c in color):  # Check if not black or gray
+            elif is_color_highlighted(color):
                 colored_rows.add(y)
     
-    highlighted_sections = []
-    if highlighted_rows or colored_rows:
-        all_special_rows = sorted(highlighted_rows.union(colored_rows))
-        start_row = max(0, min(all_special_rows) - 10 * height // 100)
-        end_row = min(height, max(all_special_rows) + 10 * height // 100)
-        highlighted_sections.append((0, start_row, width, end_row))
-    
-    return highlighted_sections, highlighted_rows, colored_rows
+    all_special_rows = sorted(highlighted_rows.union(colored_rows))
+    if all_special_rows:
+        start_row = max(0, min(all_special_rows))
+        end_row = min(height, max(all_special_rows))
+        return [(0, start_row, width, end_row)], highlighted_rows, colored_rows
+    return [], set(), set()
 
 def extract_highlighted_text_with_context(pdf_path, max_pages=20):
     print("Starting extraction of highlighted and colored text from PDF...")
@@ -143,9 +142,9 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
             text = page.get_text("text", clip=section)
             if text.strip():
                 context = page.get_text("text", clip=section)
-                status = '수정' if highlighted_rows.intersection(range(y0, y1)) and colored_rows.intersection(range(y0, y1)) else \
-                         '삭제' if highlighted_rows.intersection(range(y0, y1)) else \
-                         '추가' if colored_rows.intersection(range(y0, y1)) else '유지'
+                status = '수정' if highlighted_rows and colored_rows else \
+                         '삭제' if highlighted_rows else \
+                         '추가' if colored_rows else '유지'
                 texts_with_context.append((context, text, page_num + 1, image_path, status))
 
     print(f"Finished extracting highlighted and colored text from PDF (total {total_pages} pages)")
@@ -153,34 +152,28 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
 
 def compare_dataframes(df_before, texts_with_context):
     print("Starting comparison of dataframes...")
-    matching_rows = []
+    df_result = df_before.copy()
+    df_result['PDF_페이지'] = ''
+    df_result['이미지_경로'] = ''
 
     for context, text, page_num, image_path, status in texts_with_context:
         context_lines = context.split('\n')
-        for i in range(len(df_before)):
-            match = True
-            for j, line in enumerate(context_lines):
-                if i+j >= len(df_before) or not any(str(cell).strip() in line for cell in df_before.iloc[i+j]):
-                    match = False
-                    break
-            if match:
-                matching_rows.extend(range(i, i+len(context_lines)))
-                df_before.loc[i:i+len(context_lines)-1, 'status'] = status
+        for i in range(len(df_result)):
+            if any(str(cell).strip() in context for cell in df_result.iloc[i]):
+                table_start = i
+                while table_start > 0 and df_result.loc[table_start-1, 'table_info'] == df_result.loc[i, 'table_info']:
+                    table_start -= 1
+                table_end = i
+                while table_end < len(df_result)-1 and df_result.loc[table_end+1, 'table_info'] == df_result.loc[i, 'table_info']:
+                    table_end += 1
+                
+                df_result.loc[table_start:table_end, 'status'] = status
+                df_result.loc[table_start:table_end, 'PDF_페이지'] = page_num
+                df_result.loc[table_start:table_end, '이미지_경로'] = image_path
                 break
 
-    matching_rows = sorted(set(matching_rows))
-    df_matching = df_before.loc[matching_rows].copy()
-    
-    df_matching['PDF_페이지'] = ''
-    df_matching['이미지_경로'] = ''
-    
-    for i, (_, _, page, path, _) in enumerate(texts_with_context):
-        if i < len(df_matching):
-            df_matching.iloc[i, df_matching.columns.get_loc('PDF_페이지')] = page
-            df_matching.iloc[i, df_matching.columns.get_loc('이미지_경로')] = path
-    
-    print(f"Finished comparison. Found {len(matching_rows)} matching rows")
-    return df_matching
+    print(f"Finished comparison. Updated {len(df_result[df_result['status'] != '유지'])} rows")
+    return df_result
 
 def save_to_excel(df, output_excel_path):
     wb = Workbook()
