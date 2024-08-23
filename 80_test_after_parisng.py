@@ -40,37 +40,62 @@ async def get_full_html(url, output_dir):
     print(f"Full HTML source has been saved to {html_file_path}")
     return html_file_path
 
-def extract_tables_after_section(html_file_path, section_text):
-    with open(html_file_path, 'r', encoding='utf-8') as f:
-        html_content = f.read()
+def extract_tables_from_html(html_file_path):
+    try:
+        with open(html_file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
 
-    soup = BeautifulSoup(html_content, 'html.parser')
-    section = soup.find('strong', text=lambda text: section_text in text if text else False)
-
-    if not section:
-        print(f"Section '{section_text}' not found.")
+        soup = BeautifulSoup(html_content, 'html.parser')
+        tables = soup.find_all('table')
+        
+        if not tables:
+            print("No tables found in the HTML content.")
+            print(f"HTML content preview: {html_content[:1000]}...")
+            return []
+        
+        dfs = [pd.read_html(StringIO(str(table)))[0] for table in tables]
+        print(f"Extracted {len(dfs)} tables.")
+        return dfs
+    except Exception as e:
+        print(f"Error extracting tables: {str(e)}")
+        print("Detailed error information:")
+        import traceback
+        print(traceback.format_exc())
         return []
 
-    tables = []
-    current_element = section.find_next()
-    while current_element:
-        if current_element.name == 'table':
-            tables.append(current_element)
-        elif current_element.name == 'strong' and '특별약관' in current_element.text:
-            break
-        current_element = current_element.find_next()
+def save_original_tables_to_excel(dfs, output_excel_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Original Tables"
 
-    dfs = [pd.read_html(StringIO(str(table)))[0] for table in tables]
-    print(f"Extracted {len(dfs)} tables after '{section_text}'.")
-    return dfs
+    row = 1
+    for i, df in enumerate(dfs, start=1):
+        ws.cell(row=row, column=1, value=f'Table_{i}')
+        row += 1
 
-def process_tables_with_status(dfs):
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [' '.join(col).strip() for col in df.columns.values]
+
+        for col, header in enumerate(df.columns, start=1):
+            ws.cell(row=row, column=col, value=header)
+        row += 1
+
+        for _, data_row in df.iterrows():
+            for col, value in enumerate(data_row, start=1):
+                ws.cell(row=row, column=col, value=value)
+            row += 1
+
+        row += 2
+
+    wb.save(output_excel_path)
+    print(f"Original tables have been saved to {output_excel_path}")
+
+def process_tables(dfs):
     all_data = []
     for i, df in enumerate(dfs):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [' '.join(col).strip() for col in df.columns.values]
         df['table_info'] = f'Table_{i+1}'
-        df['status'] = '유지'  # Default status
         all_data.append(df)
     
     if not all_data:
@@ -87,19 +112,9 @@ def process_tables_with_status(dfs):
 
 def is_color_highlighted(color):
     r, g, b = color
-    # Red
-    if r > 200 and g < 100 and b < 100:
-        return True
-    # Blue
-    if r < 100 and g < 100 and b > 200:
-        return True
-    # Pink
-    if r > 200 and g < 150 and b > 200:
-        return True
-    # Purple
-    if r > 100 and g < 100 and b > 200:
-        return True
-    return False
+    if r == g == b:
+        return False
+    return max(r, g, b) > 200 and (max(r, g, b) - min(r, g, b)) > 30
 
 def detect_highlights_and_colors(image):
     width, height = image.size
@@ -157,6 +172,7 @@ def compare_dataframes(df_before, texts_with_context, output_dir):
     df_result = df_before.copy()
     df_result['PDF_페이지'] = ''
     df_result['이미지_경로'] = ''
+    df_result['상태'] = '유지'
 
     for text, page_num, image_path, status, special_rows in texts_with_context:
         text_lines = text.split('\n')
@@ -174,8 +190,8 @@ def compare_dataframes(df_before, texts_with_context, output_dir):
                 
                 # 강조된 행에 대해서만 상태 업데이트
                 for j in range(table_start, table_end + 1):
-                    if any(line.strip() in str(cell) for cell in df_result.iloc[j] for line in text_lines if line.strip() in special_rows):
-                        df_result.loc[j, 'status'] = status
+                    if any(line.strip() in str(cell) for cell in df_result.iloc[j] for line in text_lines if line.strip()):
+                        df_result.loc[j, '상태'] = status
                 
                 # 강조된 표를 별도의 xlsx 파일로 저장
                 table_df = df_result.loc[table_start:table_end].copy()
@@ -186,7 +202,12 @@ def compare_dataframes(df_before, texts_with_context, output_dir):
                 
                 break
 
-    print(f"Finished comparison. Updated {len(df_result[df_result['status'] != '유지'])} rows")
+    # 상태 컬럼을 맨 오른쪽으로 이동
+    cols = df_result.columns.tolist()
+    cols.append(cols.pop(cols.index('상태')))
+    df_result = df_result[cols]
+
+    print(f"Finished comparison. Updated {len(df_result[df_result['상태'] != '유지'])} rows")
     return df_result
 
 def save_to_excel(df, output_excel_path):
@@ -218,19 +239,22 @@ def save_to_excel(df, output_excel_path):
 async def main():
     print("Program start")
     try:
-        url = "https://www.kbinsure.co.kr/CG302120001.ec"
+        url = "https://www.kbinsure.co.kr/CG302290001.ec#"
         pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
         output_dir = "/workspaces/automation/output"
         os.makedirs(output_dir, exist_ok=True)
         output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
+        original_excel_path = os.path.join(output_dir, "변경전.xlsx")
 
         html_file_path = await get_full_html(url, output_dir)
-        dfs = extract_tables_after_section(html_file_path, "상해 관련 특별약관")
+        dfs = extract_tables_from_html(html_file_path)
         if not dfs:
             print("Failed to extract tables. Please check the HTML file.")
             return
 
-        df_before = process_tables_with_status(dfs)
+        save_original_tables_to_excel(dfs, original_excel_path)
+
+        df_before = process_tables(dfs)
         if df_before.empty:
             print("No data processed.")
             return
