@@ -266,7 +266,7 @@ def save_to_excel(df, output_excel_path):
 async def main():
     print("Program start")
     try:
-        url = "https://www.kbinsure.co.kr/CG302120001.ec"
+        url = "https://www.kbinsure.co.kr/CG302290001.ec#"
         pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
         output_dir = "/workspaces/automation/output"
         os.makedirs(output_dir, exist_ok=True)
