@@ -147,7 +147,7 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
             text = page.extract_text()
             tables = page.extract_tables()
             
-            if "□ 선택계약" in text:
+            if "□ 신태약관" in text:
                 start_extraction = True
             
             if start_extraction and not end_extraction:
@@ -160,10 +160,18 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
                 lines = text.split('\n')
                 for i, table in enumerate(tables):
                     title = ""
-                    for line in reversed(lines[:lines.index(table[0][0])]):
-                        if line.strip() and not re.match(r'^\d+$', line.strip()):  # 페이지 번호가 아닌 경우
-                            title = line.strip()
-                            break
+                    try:
+                        if table and table[0]:  # 테이블이 비어있지 않은지 확인
+                            first_cell = table[0][0] if isinstance(table[0], list) else table[0]
+                            table_start_index = next((i for i, line in enumerate(lines) if first_cell in line), -1)
+                            if table_start_index > 0:
+                                for line in reversed(lines[:table_start_index]):
+                                    if line.strip() and not re.match(r'^\d+$', line.strip()):  # 페이지 번호가 아닌 경우
+                                        title = line.strip()
+                                        break
+                    except Exception as e:
+                        print(f"Error processing table {i+1} on page {page_num + 1}: {str(e)}")
+                    
                     all_tables.append((table, page_num + 1, title))
             
             if end_extraction:
@@ -178,10 +186,11 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
             
             # 표 저장
             for i, (table, page_num, title) in enumerate(all_tables):
-                df = pd.DataFrame(table[1:], columns=table[0])
-                df.insert(0, 'Title', title)
-                df['Page'] = page_num
-                df.to_excel(writer, sheet_name=f'Table_{i+1}', index=False)
+                if table:  # 테이블이 비어있지 않은 경우에만 처리
+                    df = pd.DataFrame(table[1:], columns=table[0])
+                    df.insert(0, 'Title', title)
+                    df['Page'] = page_num
+                    df.to_excel(writer, sheet_name=f'Table_{i+1}', index=False)
         
         print(f"Saved all extracted content to {excel_path}")
 
