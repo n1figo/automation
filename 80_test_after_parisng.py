@@ -117,18 +117,16 @@ def detect_highlights_and_colors(image):
     
     all_special_rows = sorted(highlighted_rows.union(colored_rows))
     if all_special_rows:
-        start_row = max(0, min(all_special_rows))
-        end_row = min(height, max(all_special_rows))
-        return [(0, start_row, width, end_row)], highlighted_rows, colored_rows
+        return all_special_rows, highlighted_rows, colored_rows
     return [], set(), set()
 
-def extract_highlighted_text_with_context(pdf_path, max_pages=20):
+def extract_highlighted_text_with_context(pdf_path, output_dir, max_pages=20):
     print("Starting extraction of highlighted and colored text from PDF...")
     doc = fitz.open(pdf_path)
     total_pages = min(len(doc), max_pages)
     texts_with_context = []
     
-    output_image_dir = os.path.join("output", "images")
+    output_image_dir = os.path.join(output_dir, "images")
     os.makedirs(output_image_dir, exist_ok=True)
     
     for page_num in range(total_pages):
@@ -137,38 +135,33 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
         
         pix = page.get_pixmap()
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        highlighted_sections, highlighted_rows, colored_rows = detect_highlights_and_colors(img)
+        all_special_rows, highlighted_rows, colored_rows = detect_highlights_and_colors(img)
         
-        for section in highlighted_sections:
-            x0, y0, x1, y1 = section
-            
-            section_img = img.crop(section)
-            
-            image_filename = f"page_{page_num + 1}_highlight.png"
+        if all_special_rows:
+            # 전체 페이지 캡처
+            image_filename = f"page_{page_num + 1}_full.png"
             image_path = os.path.join(output_image_dir, image_filename)
-            section_img.save(image_path)
+            img.save(image_path)
             
-            text = page.get_text("text", clip=section)
-            if text.strip():
-                context = page.get_text("text", clip=section)
-                status = '수정' if highlighted_rows and colored_rows else \
-                         '삭제' if highlighted_rows else \
-                         '추가' if colored_rows else '유지'
-                texts_with_context.append((context, text, page_num + 1, image_path, status))
+            text = page.get_text("text")
+            status = '수정' if highlighted_rows and colored_rows else \
+                     '삭제' if highlighted_rows else \
+                     '추가' if colored_rows else '유지'
+            texts_with_context.append((text, page_num + 1, image_path, status, all_special_rows))
 
     print(f"Finished extracting highlighted and colored text from PDF (total {total_pages} pages)")
     return texts_with_context
 
-def compare_dataframes(df_before, texts_with_context):
+def compare_dataframes(df_before, texts_with_context, output_dir):
     print("Starting comparison of dataframes...")
     df_result = df_before.copy()
     df_result['PDF_페이지'] = ''
     df_result['이미지_경로'] = ''
 
-    for context, text, page_num, image_path, status in texts_with_context:
-        context_lines = context.split('\n')
+    for text, page_num, image_path, status, special_rows in texts_with_context:
+        text_lines = text.split('\n')
         for i in range(len(df_result)):
-            if any(str(cell).strip() in context for cell in df_result.iloc[i]):
+            if any(str(cell).strip() in text for cell in df_result.iloc[i]):
                 table_start = i
                 while table_start > 0 and df_result.loc[table_start-1, 'table_info'] == df_result.loc[i, 'table_info']:
                     table_start -= 1
@@ -176,9 +169,21 @@ def compare_dataframes(df_before, texts_with_context):
                 while table_end < len(df_result)-1 and df_result.loc[table_end+1, 'table_info'] == df_result.loc[i, 'table_info']:
                     table_end += 1
                 
-                df_result.loc[table_start:table_end, 'status'] = status
                 df_result.loc[table_start:table_end, 'PDF_페이지'] = page_num
                 df_result.loc[table_start:table_end, '이미지_경로'] = image_path
+                
+                # 강조된 행에 대해서만 상태 업데이트
+                for j in range(table_start, table_end + 1):
+                    if any(line.strip() in str(cell) for cell in df_result.iloc[j] for line in text_lines if line.strip() in special_rows):
+                        df_result.loc[j, 'status'] = status
+                
+                # 강조된 표를 별도의 xlsx 파일로 저장
+                table_df = df_result.loc[table_start:table_end].copy()
+                table_filename = f"table_page_{page_num}.xlsx"
+                table_path = os.path.join(output_dir, table_filename)
+                table_df.to_excel(table_path, index=False)
+                print(f"Saved highlighted table to {table_path}")
+                
                 break
 
     print(f"Finished comparison. Updated {len(df_result[df_result['status'] != '유지'])} rows")
@@ -234,10 +239,10 @@ async def main():
         print(df_before.head())
         print(f"Shape of combined DataFrame: {df_before.shape}")
 
-        texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
+        texts_with_context = extract_highlighted_text_with_context(pdf_path, output_dir, max_pages=20)
 
         if not df_before.empty and texts_with_context:
-            df_matching = compare_dataframes(df_before, texts_with_context)
+            df_matching = compare_dataframes(df_before, texts_with_context, output_dir)
             save_to_excel(df_matching, output_excel_path)
         else:
             print("Failed to extract tables or highlighted text. Please check the URL and PDF.")
