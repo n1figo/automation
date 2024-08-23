@@ -53,8 +53,20 @@ def extract_tables_from_html(html_file_path):
             print(f"HTML content preview: {html_content[:1000]}...")
             return []
         
-        dfs = [pd.read_html(StringIO(str(table)))[0] for table in tables]
-        print(f"Extracted {len(dfs)} tables.")
+        dfs = []
+        for i, table in enumerate(tables):
+            try:
+                df = pd.read_html(StringIO(str(table)))[0]
+                dfs.append(df)
+            except Exception as e:
+                print(f"Failed to parse table {i+1}: {str(e)}")
+                print(f"Table content: {table.prettify()[:500]}...")  # 테이블 내용의 일부를 출력
+
+        if not dfs:
+            print("No valid tables could be extracted.")
+            return []
+
+        print(f"Successfully extracted {len(dfs)} tables.")
         return dfs
     except Exception as e:
         print(f"Error extracting tables: {str(e)}")
