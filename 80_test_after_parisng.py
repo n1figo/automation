@@ -33,10 +33,21 @@ async def get_full_html_and_tables(url, output_dir):
             }
         ''')
         
-        # 테이블 영역 스크린샷 캡처
+        # 전체 페이지 스크린샷 캡처
+        await page.screenshot(path=os.path.join(output_dir, "full_page.png"), full_page=True)
+        
+        # 테이블 영역 스크린샷 캡처 (개선된 방식)
         table_elements = await page.query_selector_all('table')
         for i, table_element in enumerate(table_elements):
-            await table_element.screenshot(path=os.path.join(output_dir, f"table_{i+1}.png"))
+            try:
+                # 테이블로 스크롤
+                await table_element.scroll_into_view_if_needed()
+                # 잠시 대기하여 렌더링 완료를 기다림
+                await page.wait_for_timeout(1000)
+                # 테이블 스크린샷 캡처
+                await table_element.screenshot(path=os.path.join(output_dir, f"table_{i+1}.png"))
+            except Exception as e:
+                print(f"Failed to capture screenshot for table {i+1}: {str(e)}")
         
         await browser.close()
     
