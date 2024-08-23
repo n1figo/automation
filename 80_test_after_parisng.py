@@ -153,16 +153,23 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
                 texts_with_context.append((text, page_num + 1, None, '유지', []))
         
         # 강조된 페이지의 표 추출
+        table_data = {}
         for page_num in highlighted_pages:
             page = pdf.pages[page_num - 1]
             tables = page.extract_tables()
             if tables:
                 for i, table in enumerate(tables):
                     df = pd.DataFrame(table[1:], columns=table[0])
-                    table_filename = f"table_page_{page_num}_table_{i+1}.xlsx"
-                    table_path = os.path.join(output_dir, table_filename)
-                    df.to_excel(table_path, index=False)
-                    print(f"Saved table from page {page_num} to {table_path}")
+                    sheet_name = f"Page_{page_num}_Table_{i+1}"
+                    table_data[sheet_name] = df
+        
+        # 모든 표를 하나의 Excel 파일로 저장
+        if table_data:
+            tables_excel_path = os.path.join(output_dir, "highlighted_tables.xlsx")
+            with pd.ExcelWriter(tables_excel_path, engine='openpyxl') as writer:
+                for sheet_name, df in table_data.items():
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"Saved all highlighted tables to {tables_excel_path}")
 
     print(f"Finished extracting text and tables from PDF (total {total_pages} pages)")
     return texts_with_context
@@ -232,7 +239,7 @@ def save_to_excel(df, output_excel_path):
 async def main():
     print("Program start")
     try:
-        url = "https://www.kbinsure.co.kr/CG302120001.ec"
+        url = "https://www.kbinsure.co.kr/CG302290001.ec#"
         pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
         output_dir = "/workspaces/automation/output"
         os.makedirs(output_dir, exist_ok=True)
