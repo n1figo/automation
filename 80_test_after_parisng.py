@@ -40,62 +40,37 @@ async def get_full_html(url, output_dir):
     print(f"Full HTML source has been saved to {html_file_path}")
     return html_file_path
 
-def extract_tables_from_html(html_file_path):
-    try:
-        with open(html_file_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
+def extract_tables_after_section(html_file_path, section_text):
+    with open(html_file_path, 'r', encoding='utf-8') as f:
+        html_content = f.read()
 
-        soup = BeautifulSoup(html_content, 'html.parser')
-        tables = soup.find_all('table')
-        
-        if not tables:
-            print("No tables found in the HTML content.")
-            print(f"HTML content preview: {html_content[:1000]}...")
-            return []
-        
-        dfs = [pd.read_html(StringIO(str(table)))[0] for table in tables]
-        print(f"Extracted {len(dfs)} tables.")
-        return dfs
-    except Exception as e:
-        print(f"Error extracting tables: {str(e)}")
-        print("Detailed error information:")
-        import traceback
-        print(traceback.format_exc())
+    soup = BeautifulSoup(html_content, 'html.parser')
+    section = soup.find('strong', text=lambda text: section_text in text if text else False)
+
+    if not section:
+        print(f"Section '{section_text}' not found.")
         return []
 
-def save_original_tables_to_excel(dfs, output_excel_path):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Original Tables"
+    tables = []
+    current_element = section.find_next()
+    while current_element:
+        if current_element.name == 'table':
+            tables.append(current_element)
+        elif current_element.name == 'strong' and '특별약관' in current_element.text:
+            break
+        current_element = current_element.find_next()
 
-    row = 1
-    for i, df in enumerate(dfs, start=1):
-        ws.cell(row=row, column=1, value=f'Table_{i}')
-        row += 1
+    dfs = [pd.read_html(StringIO(str(table)))[0] for table in tables]
+    print(f"Extracted {len(dfs)} tables after '{section_text}'.")
+    return dfs
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [' '.join(col).strip() for col in df.columns.values]
-
-        for col, header in enumerate(df.columns, start=1):
-            ws.cell(row=row, column=col, value=header)
-        row += 1
-
-        for _, data_row in df.iterrows():
-            for col, value in enumerate(data_row, start=1):
-                ws.cell(row=row, column=col, value=value)
-            row += 1
-
-        row += 2
-
-    wb.save(output_excel_path)
-    print(f"Original tables have been saved to {output_excel_path}")
-
-def process_tables(dfs):
+def process_tables_with_status(dfs):
     all_data = []
     for i, df in enumerate(dfs):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [' '.join(col).strip() for col in df.columns.values]
         df['table_info'] = f'Table_{i+1}'
+        df['status'] = '유지'  # Default status
         all_data.append(df)
     
     if not all_data:
@@ -114,30 +89,36 @@ def is_color_highlighted(color):
     r, g, b = color
     if r == g == b:
         return False
-    return max(r, g, b) > 200 and (max(r, g, b) - min(r, g, b)) > 30
+    return max(r, g, b) > 200 or (max(r, g, b) - min(r, g, b)) > 30
 
-def detect_highlights(image):
+def detect_highlights_and_colors(image):
     width, height = image.size
     img_array = np.array(image)
     
     highlighted_rows = set()
+    colored_rows = set()
     for y in range(height):
         for x in range(width):
-            if is_color_highlighted(img_array[y, x]):
+            color = img_array[y, x]
+            if is_color_highlighted(color):
                 highlighted_rows.add(y)
+            elif not all(c == color[0] for c in color):  # Check if not black or gray
+                colored_rows.add(y)
     
-    if highlighted_rows:
-        start_row = max(0, min(highlighted_rows) - 10 * height // 100)
-        end_row = min(height, max(highlighted_rows) + 10 * height // 100)
-        return [(0, start_row, width, end_row)]
+    highlighted_sections = []
+    if highlighted_rows or colored_rows:
+        all_special_rows = sorted(highlighted_rows.union(colored_rows))
+        start_row = max(0, min(all_special_rows) - 10 * height // 100)
+        end_row = min(height, max(all_special_rows) + 10 * height // 100)
+        highlighted_sections.append((0, start_row, width, end_row))
     
-    return []
+    return highlighted_sections, highlighted_rows, colored_rows
 
 def extract_highlighted_text_with_context(pdf_path, max_pages=20):
-    print("Starting extraction of highlighted text from PDF...")
+    print("Starting extraction of highlighted and colored text from PDF...")
     doc = fitz.open(pdf_path)
     total_pages = min(len(doc), max_pages)
-    highlighted_texts_with_context = []
+    texts_with_context = []
     
     output_image_dir = os.path.join("output", "images")
     os.makedirs(output_image_dir, exist_ok=True)
@@ -148,31 +129,33 @@ def extract_highlighted_text_with_context(pdf_path, max_pages=20):
         
         pix = page.get_pixmap()
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        highlighted_sections = detect_highlights(img)
+        highlighted_sections, highlighted_rows, colored_rows = detect_highlights_and_colors(img)
         
-        if highlighted_sections:
-            section = highlighted_sections[0]
+        for section in highlighted_sections:
             x0, y0, x1, y1 = section
             
-            highlight_img = img.crop(section)
+            section_img = img.crop(section)
             
             image_filename = f"page_{page_num + 1}_highlight.png"
             image_path = os.path.join(output_image_dir, image_filename)
-            highlight_img.save(image_path)
+            section_img.save(image_path)
             
             text = page.get_text("text", clip=section)
             if text.strip():
                 context = page.get_text("text", clip=section)
-                highlighted_texts_with_context.append((context, text, page_num + 1, image_path))
+                status = '수정' if highlighted_rows.intersection(range(y0, y1)) and colored_rows.intersection(range(y0, y1)) else \
+                         '삭제' if highlighted_rows.intersection(range(y0, y1)) else \
+                         '추가' if colored_rows.intersection(range(y0, y1)) else '유지'
+                texts_with_context.append((context, text, page_num + 1, image_path, status))
 
-    print(f"Finished extracting highlighted text from PDF (total {total_pages} pages)")
-    return highlighted_texts_with_context
+    print(f"Finished extracting highlighted and colored text from PDF (total {total_pages} pages)")
+    return texts_with_context
 
-def compare_dataframes(df_before, highlighted_texts_with_context):
+def compare_dataframes(df_before, texts_with_context):
     print("Starting comparison of dataframes...")
     matching_rows = []
 
-    for context, highlighted_text, page_num, image_path in highlighted_texts_with_context:
+    for context, text, page_num, image_path, status in texts_with_context:
         context_lines = context.split('\n')
         for i in range(len(df_before)):
             match = True
@@ -182,17 +165,16 @@ def compare_dataframes(df_before, highlighted_texts_with_context):
                     break
             if match:
                 matching_rows.extend(range(i, i+len(context_lines)))
+                df_before.loc[i:i+len(context_lines)-1, 'status'] = status
                 break
 
     matching_rows = sorted(set(matching_rows))
     df_matching = df_before.loc[matching_rows].copy()
     
-    df_matching['일치'] = '일치'
-    df_matching['하단 표 삽입요망'] = '하단 표 삽입요망'
     df_matching['PDF_페이지'] = ''
     df_matching['이미지_경로'] = ''
     
-    for i, (_, _, page, path) in enumerate(highlighted_texts_with_context):
+    for i, (_, _, page, path, _) in enumerate(texts_with_context):
         if i < len(df_matching):
             df_matching.iloc[i, df_matching.columns.get_loc('PDF_페이지')] = page
             df_matching.iloc[i, df_matching.columns.get_loc('이미지_경로')] = path
@@ -234,17 +216,14 @@ async def main():
         output_dir = "/workspaces/automation/output"
         os.makedirs(output_dir, exist_ok=True)
         output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
-        original_excel_path = os.path.join(output_dir, "변경전.xlsx")
 
         html_file_path = await get_full_html(url, output_dir)
-        dfs = extract_tables_from_html(html_file_path)
+        dfs = extract_tables_after_section(html_file_path, "상해 관련 특별약관")
         if not dfs:
             print("Failed to extract tables. Please check the HTML file.")
             return
 
-        save_original_tables_to_excel(dfs, original_excel_path)
-
-        df_before = process_tables(dfs)
+        df_before = process_tables_with_status(dfs)
         if df_before.empty:
             print("No data processed.")
             return
@@ -253,10 +232,10 @@ async def main():
         print(df_before.head())
         print(f"Shape of combined DataFrame: {df_before.shape}")
 
-        highlighted_texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
+        texts_with_context = extract_highlighted_text_with_context(pdf_path, max_pages=20)
 
-        if not df_before.empty and highlighted_texts_with_context:
-            df_matching = compare_dataframes(df_before, highlighted_texts_with_context)
+        if not df_before.empty and texts_with_context:
+            df_matching = compare_dataframes(df_before, texts_with_context)
             save_to_excel(df_matching, output_excel_path)
         else:
             print("Failed to extract tables or highlighted text. Please check the URL and PDF.")
