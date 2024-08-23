@@ -87,10 +87,19 @@ def process_tables_with_status(dfs):
 
 def is_color_highlighted(color):
     r, g, b = color
-    return (r > 200 and g < 100 and b < 100) or  # Red
-           (r < 100 and g < 100 and b > 200) or  # Blue
-           (r > 200 and g < 150 and b > 200) or  # Pink
-           (r > 100 and g < 100 and b > 200)     # Purple
+    # Red
+    if r > 200 and g < 100 and b < 100:
+        return True
+    # Blue
+    if r < 100 and g < 100 and b > 200:
+        return True
+    # Pink
+    if r > 200 and g < 150 and b > 200:
+        return True
+    # Purple
+    if r > 100 and g < 100 and b > 200:
+        return True
+    return False
 
 def detect_highlights_and_colors(image):
     width, height = image.size
