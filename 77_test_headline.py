@@ -147,7 +147,7 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
             text = page.extract_text()
             tables = page.extract_tables()
             
-            if "□ 신태약관" in text:
+            if "□ 선택계약" in text:
                 start_extraction = True
             
             if start_extraction and not end_extraction:
