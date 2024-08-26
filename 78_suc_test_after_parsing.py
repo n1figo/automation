@@ -9,6 +9,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from bs4 import BeautifulSoup
 from io import StringIO
 import pdfplumber
+import fitz  # PyMuPDF
 
 async def get_full_html_and_tables(url, output_dir):
     try:
