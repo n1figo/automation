@@ -132,48 +132,54 @@ def detect_highlights_and_colors(image):
     return [], set(), set()
 
 def extract_highlighted_text_and_tables(pdf_path, output_dir):
-    print("Starting extraction of text and tables from PDF...")
-    with pdfplumber.open(pdf_path) as pdf:
-        total_pages = len(pdf.pages)
-        texts_with_context = []
-        all_tables = []
-        start_extraction = False
-        end_extraction = False
-        
-        for page_num, page in enumerate(pdf.pages):
-            print(f"Processing page {page_num + 1}/{total_pages}")
-            
-            text = page.extract_text()
-            tables = page.extract_tables()
-            
-            if "□ 선택계약" in text:
-                start_extraction = True
-            
-            if start_extraction and not end_extraction:
-                if "다. 보험료산출기초 및 공시이율" in text:
-                    end_extraction = True
-                
-                texts_with_context.append((text, page_num + 1))
-                all_tables.extend([(table, page_num + 1) for table in tables])
-            
-            if end_extraction:
-                break
-        
-        # 모든 표와 텍스트를 하나의 Excel 파일로 저장
-        excel_path = os.path.join(output_dir, "extracted_content.xlsx")
-        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            # 텍스트 저장
-            text_df = pd.DataFrame(texts_with_context, columns=['Text', 'Page'])
-            text_df.to_excel(writer, sheet_name='Extracted Text', index=False)
-            
-            # 표 저장
-            for i, (table, page_num) in enumerate(all_tables):
-                df = pd.DataFrame(table[1:], columns=table[0])
-                df['Page'] = page_num
-                df.to_excel(writer, sheet_name=f'Table_{i+1}', index=False)
-        
-        print(f"Saved all extracted content to {excel_path}")
+    print("Starting extraction of text and tables from PDF using PyMuPDF...")
+    doc = fitz.open(pdf_path)
+    texts_with_context = []
+    all_tables = []
+    start_extraction = False
+    end_extraction = False
 
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        print(f"Processing page {page_num + 1}/{len(doc)}")
+
+        text = page.get_text()
+        
+        if "□ 선택계약" in text:
+            start_extraction = True
+        
+        if start_extraction and not end_extraction:
+            if "다. 보험료산출기초 및 공시이율" in text:
+                end_extraction = True
+            
+            # 하이라이트된 텍스트 추출
+            highlights = page.get_text("words")
+            highlighted_text = " ".join([word[4] for word in highlights if word[1] != word[2]])  # 색상이 다른 단어만 추출
+            
+            # 테이블 추출
+            tables = page.find_tables()
+            table_data = [table.extract() for table in tables]
+            
+            texts_with_context.append((highlighted_text, page_num + 1))
+            all_tables.extend([(table, page_num + 1) for table in table_data])
+        
+        if end_extraction:
+            break
+
+    # 모든 표와 텍스트를 하나의 Excel 파일로 저장
+    excel_path = os.path.join(output_dir, "extracted_content.xlsx")
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        # 텍스트 저장
+        text_df = pd.DataFrame(texts_with_context, columns=['Text', 'Page'])
+        text_df.to_excel(writer, sheet_name='Extracted Text', index=False)
+        
+        # 표 저장
+        for i, (table, page_num) in enumerate(all_tables):
+            df = pd.DataFrame(table[1:], columns=table[0])
+            df['Page'] = page_num
+            df.to_excel(writer, sheet_name=f'Table_{i+1}', index=False)
+    
+    print(f"Saved all extracted content to {excel_path}")
     print(f"Finished extracting text and tables from PDF")
     return texts_with_context, all_tables
 
@@ -276,6 +282,9 @@ async def main():
 
         if texts_with_context or all_tables:
             print("Successfully extracted content from PDF.")
+            # 여기에 비교 및 결과 저장 로직을 추가할 수 있습니다.
+            # 예: df_result = compare_dataframes(df_before, texts_with_context, output_dir)
+            #     save_to_excel(df_result, output_excel_path)
         else:
             print("Failed to extract content from PDF. Please check the PDF file.")
 
