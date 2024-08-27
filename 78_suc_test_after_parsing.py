@@ -157,7 +157,10 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
             highlights = page.get_text("words")
             highlighted_text = " ".join([word[4] for word in highlights if word[1] != word[2]])  # 색상이 다른 단어만 추출
             
-            # 테이블 추출
+            
+
+
+            
             tables = page.find_tables()
             table_data = [table.extract() for table in tables]
             
