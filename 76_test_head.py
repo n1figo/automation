@@ -19,16 +19,16 @@ class PDFTableExtractor:
         all_tables = []
         for page_num in range(len(self.doc)):
             page = self.doc[page_num]
-            tables = self.extract_tables_from_page(page)
+            tables = self._extract_tables_from_page(page)
             titled_tables = self._assign_titles_to_tables(page, tables)
             all_tables.extend(titled_tables)
         return self._merge_tables_with_same_title(all_tables)
     
-    def extract_tables_from_page(self, page: fitz.Page) -> List[Any]:
+    def _extract_tables_from_page(self, page: fitz.Page) -> List[fitz.TableFinder]:
         tables = page.find_tables()
         return tables
     
-    def _assign_titles_to_tables(self, page: fitz.Page, tables: List[Any]) -> List[Tuple[str, pd.DataFrame]]:
+    def _assign_titles_to_tables(self, page: fitz.Page, tables: List[fitz.TableFinder]) -> List[Tuple[str, pd.DataFrame]]:
         titled_tables = []
         for table in tables:
             title = self._find_table_title(page, table)
@@ -36,24 +36,18 @@ class PDFTableExtractor:
             titled_tables.append((title, df))
         return titled_tables
     
-    def _find_table_title(self, page: fitz.Page, table: Any) -> str:
+    def _find_table_title(self, page: fitz.Page, table: fitz.TableFinder) -> str:
         # 표 위의 텍스트 블록을 찾아 제목으로 사용
-        blocks = page.get_text("dict")["blocks"]
-        table_top = table.bbox[1] if hasattr(table, 'bbox') else table[1]  # 테이블의 상단 y 좌표
-        potential_titles = [b["text"] for b in blocks if b["bbox"][3] < table_top and b["bbox"][3] > table_top - 50]
+        text_blocks = page.get_text("blocks")
+        table_top = table.bbox.y0
+        potential_titles = [block[4] for block in text_blocks if block[3] < table_top and block[3] > table_top - 50]
         
         if potential_titles:
             return potential_titles[-1].strip()
         return "Untitled Table"
     
-    def _table_to_dataframe(self, table: Any) -> pd.DataFrame:
-        if hasattr(table, 'extract'):
-            data = table.extract()
-        else:
-            data = table
-        if not data:
-            return pd.DataFrame()
-        return pd.DataFrame(data[1:], columns=data[0])
+    def _table_to_dataframe(self, table: fitz.TableFinder) -> pd.DataFrame:
+        return table.to_pandas()
     
     def _merge_tables_with_same_title(self, tables: List[Tuple[str, pd.DataFrame]]) -> List[Tuple[str, pd.DataFrame]]:
         merged_tables = defaultdict(list)
