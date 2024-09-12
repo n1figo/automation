@@ -213,7 +213,42 @@ def compare_dataframes(df_before, texts_with_context, output_dir):
     return df_result
 
 def save_to_excel(df, output_excel_path):
-    # 이 함수는 변경 없이 그대로 유지
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Comparison Results"
+
+    row = 1
+    if 'table_info' in df.columns:
+        for table_info in df['table_info'].unique():
+            table_df = df[df['table_info'] == table_info]
+            
+            ws.cell(row=row, column=1, value=table_info)
+            row += 1
+            
+            for col, header in enumerate(table_df.columns, start=1):
+                ws.cell(row=row, column=col, value=header)
+            row += 1
+            
+            for _, data_row in table_df.iterrows():
+                for col, value in enumerate(data_row, start=1):
+                    ws.cell(row=row, column=col, value=value)
+                row += 1
+            
+            row += 2
+    else:
+        # 'table_info' 열이 없는 경우 전체 DataFrame을 그대로 저장
+        for col, header in enumerate(df.columns, start=1):
+            ws.cell(row=row, column=col, value=header)
+        row += 1
+        
+        for _, data_row in df.iterrows():
+            for col, value in enumerate(data_row, start=1):
+                ws.cell(row=row, column=col, value=value)
+            row += 1
+
+    wb.save(output_excel_path)
+    print(f"Results have been saved to {output_excel_path}")
+
 
 async def main():
     print("Program start")
