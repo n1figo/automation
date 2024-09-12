@@ -109,23 +109,29 @@ def save_original_tables_to_excel(dfs, output_excel_path):
 
 def is_color_text(color):
     r, g, b = color
-    is_black = r == g == b == 0
-    is_white = r == g == b == 255
-    is_grayscale = r == g == b
-    return not (is_black or is_white or is_grayscale)
+    is_black_or_dark = max(r, g, b) < 50  # 약간 어두운 색상도 제외
+    is_white = r > 240 and g > 240 and b > 240  # 흰색에 가까운 색상
+    is_gray = abs(r - g) < 10 and abs(g - b) < 10 and abs(r - b) < 10  # 회색 (RGB 값의 차이가 10 이하)
+    return not (is_black_or_dark or is_white or is_gray)
 
 def detect_colored_text(image):
     width, height = image.size
     img_array = np.array(image)
     
-    colored_rows = set()
+    colored_pixels = []
     for y in range(height):
         for x in range(width):
             color = img_array[y, x]
             if is_color_text(color):
-                colored_rows.add(y)
+                colored_pixels.append((x, y))
     
-    return list(colored_rows)
+    # 색깔 있는 픽셀들의 클러스터를 찾아 의미 있는 텍스트 영역만 반환
+    if colored_pixels:
+        x_coords, y_coords = zip(*colored_pixels)
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        return [(min_x, min_y, max_x, max_y)]
+    return []
 
 def extract_highlighted_text_and_tables(pdf_path, output_dir):
     print("Starting extraction of colored text and tables from PDF...")
@@ -143,20 +149,23 @@ def extract_highlighted_text_and_tables(pdf_path, output_dir):
             img = page.to_image()
             pil_image = img.original
             
-            colored_rows = detect_colored_text(pil_image)
+            colored_regions = detect_colored_text(pil_image)
             
-            if colored_rows:
+            if colored_regions:
                 colored_pages.add(page_num + 1)
                 
                 image_filename = f"page_{page_num + 1}_full.png"
                 image_path = os.path.join(output_image_dir, image_filename)
                 pil_image.save(image_path)
                 
-                text = page.extract_text()
-                texts_with_context.append((text, page_num + 1, image_path, '색상 텍스트 감지', colored_rows))
+                # 색깔 있는 텍스트 영역만 추출
+                text = ""
+                for region in colored_regions:
+                    text += page.crop(region).extract_text()
+                
+                texts_with_context.append((text, page_num + 1, image_path, '색상 텍스트 감지', colored_regions))
             else:
-                text = page.extract_text()
-                texts_with_context.append((text, page_num + 1, None, '유지', []))
+                texts_with_context.append(("", page_num + 1, None, '유지', []))
         
         # 색상 텍스트가 있는 페이지의 표 추출
         table_data = {}
@@ -186,24 +195,21 @@ def compare_dataframes(df_before, texts_with_context, output_dir):
     df_result['이미지_경로'] = ''
     df_result['상태'] = '유지'
 
-    for text, page_num, image_path, status, colored_rows in texts_with_context:
-        text_lines = text.split('\n')
-        for i in range(len(df_result)):
-            if any(str(cell).strip() in text for cell in df_result.iloc[i]):
-                table_start = i
-                while table_start > 0 and df_result.loc[table_start-1, 'table_info'] == df_result.loc[i, 'table_info']:
-                    table_start -= 1
-                table_end = i
-                while table_end < len(df_result)-1 and df_result.loc[table_end+1, 'table_info'] == df_result.loc[i, 'table_info']:
-                    table_end += 1
-                
-                df_result.loc[table_start:table_end, 'PDF_페이지'] = page_num
-                df_result.loc[table_start:table_end, '이미지_경로'] = image_path
-                
-                if colored_rows:
+    for text, page_num, image_path, status, colored_regions in texts_with_context:
+        if text.strip():  # 색깔 있는 텍스트가 있는 경우에만 처리
+            for i in range(len(df_result)):
+                if any(str(cell).strip() in text for cell in df_result.iloc[i]):
+                    table_start = i
+                    while table_start > 0 and df_result.loc[table_start-1, 'table_info'] == df_result.loc[i, 'table_info']:
+                        table_start -= 1
+                    table_end = i
+                    while table_end < len(df_result)-1 and df_result.loc[table_end+1, 'table_info'] == df_result.loc[i, 'table_info']:
+                        table_end += 1
+                    
+                    df_result.loc[table_start:table_end, 'PDF_페이지'] = page_num
+                    df_result.loc[table_start:table_end, '이미지_경로'] = image_path
                     df_result.loc[table_start:table_end, '상태'] = '색상 텍스트 감지'
-                
-                break
+                    break
 
     cols = df_result.columns.tolist()
     cols.append(cols.pop(cols.index('상태')))
@@ -211,6 +217,7 @@ def compare_dataframes(df_before, texts_with_context, output_dir):
 
     print(f"Finished comparison. Updated {len(df_result[df_result['상태'] != '유지'])} rows")
     return df_result
+
 
 def save_to_excel(df, output_excel_path):
     wb = Workbook()
