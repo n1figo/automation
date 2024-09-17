@@ -102,53 +102,35 @@ def get_capture_regions(contours, image_height, image_width):
 
     return regions
 
-def extract_text_from_region(image, region):
+def extract_text_from_region(image, region, reader):
     start_y, end_y = region
     roi = image[start_y:end_y, :]
-    # Convert to PIL Image for EasyOCR
-    pil_img = Image.fromarray(roi)
-    roi_image_path = os.path.join(TEXT_OUTPUT_DIR, "roi_test_easyocr.png")
-    pil_img.save(roi_image_path)
-    if DEBUG_MODE:
-        print(f"ROI 이미지가 '{roi_image_path}'에 저장되었습니다.")
     
-    # EasyOCR 리더 초기화 (한국어 지원)
-    try:
-        reader = easyocr.Reader(['ko'], gpu=False)  # GPU 사용 시 gpu=True로 설정
-        if DEBUG_MODE:
-            print("EasyOCR 리더 초기화 완료.")
-    except Exception as e:
-        print(f"EasyOCR 리더 초기화 중 오류 발생: {e}")
-        return ""
+    # 이미지 전처리
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    denoised = cv2.medianBlur(thresh, 3)
     
-    # OCR 수행
-    try:
-        result = reader.readtext(roi_image_path, detail=0, paragraph=False)
-        if DEBUG_MODE:
-            print(f"EasyOCR OCR 결과: {result}")
-    except Exception as e:
-        print(f"OCR 수행 중 오류 발생: {e}")
-        return ""
+    # 이미지 크기 확대 (예: 150%)
+    scale_percent = 150  # 원하는 비율로 조정
+    width = int(denoised.shape[1] * scale_percent / 100)
+    height = int(denoised.shape[0] * scale_percent / 100)
+    dim = (width, height)
+    resized = cv2.resize(denoised, dim, interpolation=cv2.INTER_LINEAR)
+    
+    # EasyOCR으로 OCR 수행
+    result = reader.readtext(resized, detail=0, paragraph=False)
     
     # 추출된 텍스트 결합
     extracted_text = ' '.join(result).strip()
     return extracted_text
 
-def verify_easyocr():
+def verify_easyocr(reader):
     """
     EasyOCR가 정상적으로 작동하는지 확인하기 위한 함수.
     이미 존재하는 'test.png' 이미지를 사용하여 OCR을 수행합니다.
     """
     sample_text = "테스트"
-    
-    # EasyOCR 리더 초기화 (한국어 지원)
-    try:
-        reader = easyocr.Reader(['ko'], gpu=False)  # GPU 사용 시 gpu=True로 설정
-        if DEBUG_MODE:
-            print("EasyOCR 리더 초기화 완료.")
-    except Exception as e:
-        print(f"EasyOCR 리더 초기화 중 오류 발생: {e}")
-        return False
     
     # OCR 수행할 이미지 경로 설정
     test_image_path = os.path.join(TEXT_OUTPUT_DIR, "test.png")
@@ -160,20 +142,34 @@ def verify_easyocr():
     if DEBUG_MODE:
         print(f"OCR 수행할 이미지 경로: {test_image_path}")
     
+    # 이미지 로딩
+    roi = cv2.imread(test_image_path)
+    if roi is None:
+        print(f"이미지 로딩 실패: {test_image_path}")
+        return False
+    
+    # 이미지 전처리
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    denoised = cv2.medianBlur(thresh, 3)
+    scale_percent = 150
+    width = int(denoised.shape[1] * scale_percent / 100)
+    height = int(denoised.shape[0] * scale_percent / 100)
+    dim = (width, height)
+    resized = cv2.resize(denoised, dim, interpolation=cv2.INTER_LINEAR)
+    
     # OCR 수행
     try:
-        result = reader.readtext(test_image_path, detail=0, paragraph=False)
+        result = reader.readtext(resized, detail=0, paragraph=False)
         if DEBUG_MODE:
             print(f"EasyOCR OCR 결과: {result}")
     except Exception as e:
         print(f"OCR 수행 중 오류 발생: {e}")
         return False
     
-    # 추출된 텍스트 결합
     extracted_text = ' '.join(result).strip()
-    print(f"OCR Extracted Text: '{extracted_text}'")  # 추가된 로그
+    print(f"OCR Extracted Text: '{extracted_text}'")
     
-    # 검증
     if sample_text in extracted_text:
         print("EasyOCR 검증 성공: '테스트'가 인식되었습니다.")
         return True
@@ -181,7 +177,7 @@ def verify_easyocr():
         print("EasyOCR 검증 실패: '테스트'가 인식되지 않았습니다.")
         return False
 
-def extract_target_tables_from_page(page, image, page_number, pdf_path, before_highlight_file):
+def extract_target_tables_from_page(page, image, page_number, pdf_path, before_highlight_file, reader):
     print(f"페이지 {page_number + 1} 처리 중...")
     
     # 테이블 추출: PyMuPDF의 extract_tables() 사용
@@ -210,7 +206,7 @@ def extract_target_tables_from_page(page, image, page_number, pdf_path, before_h
     
     # 하이라이트 영역에서 OCR로 텍스트 추출
     for idx, region in enumerate(highlight_regions, start=1):
-        extracted_text = extract_text_from_region(image, region)
+        extracted_text = extract_text_from_region(image, region, reader)
         if DEBUG_MODE:
             print(f"하이라이트 영역 {idx} ({region})에서 추출한 텍스트:\n{extracted_text}\n")
         ocr_texts.append(extracted_text)
@@ -324,9 +320,18 @@ def save_revisions_to_excel(df, output_excel_path):
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
     
+    # EasyOCR 리더 초기화 (한국어 지원)
+    try:
+        reader = easyocr.Reader(['ko'], gpu=False)  # GPU 사용 시 gpu=True로 설정
+        if DEBUG_MODE:
+            print("EasyOCR 리더 초기화 완료.")
+    except Exception as e:
+        print(f"EasyOCR 리더 초기화 중 오류 발생: {e}")
+        return
+    
     # EasyOCR 검증
     print("EasyOCR 검증 중...")
-    if not verify_easyocr():
+    if not verify_easyocr(reader):
         print("EasyOCR 검증에 실패했습니다. 스크립트를 종료합니다.")
         return
     print("EasyOCR 검증에 성공했습니다.")
@@ -354,7 +359,7 @@ def main(pdf_path, output_excel_path):
         f.write("=" * 50 + "\n")
     
     # 페이지에서 표 추출 및 강조 영역 분석
-    table_data = extract_target_tables_from_page(page, image, page_number, pdf_path, BEFORE_HIGHLIGHT_PATH)
+    table_data = extract_target_tables_from_page(page, image, page_number, pdf_path, BEFORE_HIGHLIGHT_PATH, reader)
     
     if DEBUG_MODE:
         print("추출된 테이블 데이터:", table_data)  # 디버그: table_data 출력
