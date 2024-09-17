@@ -1,4 +1,4 @@
-import fitz  # PyMuPDF (여전히 사용 중, PDF 정보에 접근)
+import fitz  # PyMuPDF (PDF 정보 접근용)
 import pytesseract
 import cv2
 from pytesseract import Output
@@ -9,9 +9,9 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Alignment
 import os
-from typing import List, Tuple, Any  # List, Tuple, Any를 import
+from typing import List, Tuple, Any
 
-# PDF를 이미지로 변환
+# PDF를 이미지로 변환하는 함수
 def convert_pdf_to_images(pdf_path: str):
     pages = convert_from_path(pdf_path)
     image_paths = []
@@ -21,7 +21,7 @@ def convert_pdf_to_images(pdf_path: str):
         image_paths.append(image_path)
     return image_paths
 
-# 텍스트 및 배경색을 감지
+# 이미지에서 텍스트와 배경색을 추출하는 함수
 def extract_text_and_background_from_image(image_path: str):
     image = cv2.imread(image_path)
     d = pytesseract.image_to_data(image, output_type=Output.DICT)
@@ -37,7 +37,7 @@ def extract_text_and_background_from_image(image_path: str):
             roi = image[y:y+h, x:x+w]
             background_color = cv2.mean(roi)[:3]
             background_color = tuple(map(int, background_color))  # BGR 값을 정수로 변환
-                
+
             # 배경색이 특정 조건을 만족하는 경우 "추가"로 판단
             if not is_common_background_color(background_color):
                 status = "추가"
@@ -62,27 +62,30 @@ def is_common_background_color(color) -> bool:
         return True
     return False
 
-# 엑셀 작성 및 변경사항 적용 클래스
+# 엑셀 파일 작성 및 변경사항 적용 클래스
 class ExcelWriterWithChanges:
     def __init__(self, output_path: str):
         self.output_path = output_path
         self.workbook = Workbook()
         self.sheet = self.workbook.active
         self.sheet.title = "Extracted Data"
-        
+
     def write_data_with_changes(self, extracted_data):
         yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-        
+
         # 추출된 데이터를 DataFrame으로 변환
         df = pd.DataFrame(extracted_data, columns=['텍스트', '상태', '배경색'])
-        
+
+        # 배경색 컬럼을 문자열로 변환 (튜플을 문자열로 변환하여 엑셀에 저장)
+        df['배경색'] = df['배경색'].apply(lambda x: str(x))
+
         # "변경사항" 컬럼 추가
         df['변경사항'] = df['상태']
-        
+
         # DataFrame을 엑셀로 작성
         for r in dataframe_to_rows(df, index=False, header=True):
             self.sheet.append(r)
-            
+
         # 서식 적용
         for row in self.sheet.iter_rows(min_row=2, max_row=self.sheet.max_row, min_col=1, max_col=self.sheet.max_column):
             status_cell = row[df.columns.get_loc('변경사항')]
@@ -92,7 +95,7 @@ class ExcelWriterWithChanges:
             # 줄바꿈 설정
             for cell in row:
                 cell.alignment = Alignment(wrap_text=True)
-        
+
         self.workbook.save(self.output_path)
         print(f"Data saved with changes to {self.output_path}")
 
@@ -100,16 +103,20 @@ class ExcelWriterWithChanges:
 def main(pdf_path: str, output_excel_path: str):
     # PDF를 이미지로 변환
     image_paths = convert_pdf_to_images(pdf_path)
-    
+
     extracted_data = []
-    
+
     # 각 이미지에서 텍스트와 배경색을 추출
     for image_path in image_paths:
         extracted_data.extend(extract_text_and_background_from_image(image_path))
-    
+
     # 엑셀 파일로 작성
     writer = ExcelWriterWithChanges(output_excel_path)
     writer.write_data_with_changes(extracted_data)
+
+    # 임시 이미지 파일 삭제 (선택 사항)
+    for image_path in image_paths:
+        os.remove(image_path)
 
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
