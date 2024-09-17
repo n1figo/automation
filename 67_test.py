@@ -5,7 +5,7 @@ import cv2
 import os
 import re
 from PIL import Image
-import pytesseract
+import easyocr  # Tesseract 대신 EasyOCR 사용
 
 # 디버깅 모드 설정
 DEBUG_MODE = True
@@ -20,16 +20,6 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TEXT_OUTPUT_DIR, exist_ok=True)
 
 BEFORE_HIGHLIGHT_PATH = os.path.join(TEXT_OUTPUT_DIR, "before_highlight.txt")
-
-# Tesseract OCR 경로 설정 (필요 시)
-# 예: pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-# Ubuntu/macOS 예시:
-pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
-
-# TESSDATA_PREFIX 환경 변수 설정 (필요 시)
-os.environ['TESSDATA_PREFIX'] = '/usr/share/tesseract-ocr/4.00/tessdata/'  # Ubuntu 예시
-# Windows 예시:
-# os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata\'
 
 def remove_illegal_characters(text):
     ILLEGAL_CHARACTERS_RE = re.compile(
@@ -115,29 +105,80 @@ def get_capture_regions(contours, image_height, image_width):
 def extract_text_from_region(image, region):
     start_y, end_y = region
     roi = image[start_y:end_y, :]
-    # Convert to PIL Image for pytesseract
+    # Convert to PIL Image for EasyOCR
     pil_img = Image.fromarray(roi)
-    text = pytesseract.image_to_string(pil_img, lang='kor')  # 언어 설정 필요 시 조정
-    return text
+    roi_image_path = os.path.join(TEXT_OUTPUT_DIR, "roi_test_easyocr.png")
+    pil_img.save(roi_image_path)
+    if DEBUG_MODE:
+        print(f"ROI 이미지가 '{roi_image_path}'에 저장되었습니다.")
+    
+    # EasyOCR 리더 초기화 (한국어 지원)
+    try:
+        reader = easyocr.Reader(['ko'], gpu=False)  # GPU 사용 시 gpu=True로 설정
+        if DEBUG_MODE:
+            print("EasyOCR 리더 초기화 완료.")
+    except Exception as e:
+        print(f"EasyOCR 리더 초기화 중 오류 발생: {e}")
+        return ""
+    
+    # OCR 수행
+    try:
+        result = reader.readtext(roi_image_path, detail=0, paragraph=False)
+        if DEBUG_MODE:
+            print(f"EasyOCR OCR 결과: {result}")
+    except Exception as e:
+        print(f"OCR 수행 중 오류 발생: {e}")
+        return ""
+    
+    # 추출된 텍스트 결합
+    extracted_text = ' '.join(result).strip()
+    return extracted_text
 
-def verify_tesseract():
+def verify_easyocr():
     """
-    Tesseract OCR가 정상적으로 작동하는지 확인하기 위한 함수.
-    간단한 텍스트가 포함된 이미지를 생성하여 OCR을 수행합니다.
+    EasyOCR가 정상적으로 작동하는지 확인하기 위한 함수.
+    이미 존재하는 'test.png' 이미지를 사용하여 OCR을 수행합니다.
     """
     sample_text = "테스트"
-    # Create a simple image with the sample text using OpenCV
-    img = np.ones((200, 400, 3), dtype=np.uint8) * 255  # White background
-    # Use OpenCV's built-in fonts
-    cv2.putText(img, sample_text, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), 3, cv2.LINE_AA)
-    pil_img = Image.fromarray(img)
-    extracted_text = pytesseract.image_to_string(pil_img, lang='kor')
-    print(f"OCR Extracted Text: '{extracted_text.strip()}'")  # 추가된 로그
+    
+    # EasyOCR 리더 초기화 (한국어 지원)
+    try:
+        reader = easyocr.Reader(['ko'], gpu=False)  # GPU 사용 시 gpu=True로 설정
+        if DEBUG_MODE:
+            print("EasyOCR 리더 초기화 완료.")
+    except Exception as e:
+        print(f"EasyOCR 리더 초기화 중 오류 발생: {e}")
+        return False
+    
+    # OCR 수행할 이미지 경로 설정
+    test_image_path = os.path.join(TEXT_OUTPUT_DIR, "test.png")
+    
+    if not os.path.isfile(test_image_path):
+        print(f"테스트 이미지 파일을 찾을 수 없습니다: {test_image_path}")
+        return False
+    
+    if DEBUG_MODE:
+        print(f"OCR 수행할 이미지 경로: {test_image_path}")
+    
+    # OCR 수행
+    try:
+        result = reader.readtext(test_image_path, detail=0, paragraph=False)
+        if DEBUG_MODE:
+            print(f"EasyOCR OCR 결과: {result}")
+    except Exception as e:
+        print(f"OCR 수행 중 오류 발생: {e}")
+        return False
+    
+    # 추출된 텍스트 결합
+    extracted_text = ' '.join(result).strip()
+    print(f"OCR Extracted Text: '{extracted_text}'")  # 추가된 로그
+    
+    # 검증
     if sample_text in extracted_text:
-        print("Tesseract OCR 검증 성공: '테스트'가 인식되었습니다.")
+        print("EasyOCR 검증 성공: '테스트'가 인식되었습니다.")
         return True
     else:
-        print("Tesseract OCR 검증 실패: '테스트'가 인식되지 않았습니다.")
+        print("EasyOCR 검증 실패: '테스트'가 인식되지 않았습니다.")
         return False
 
 def extract_target_tables_from_page(page, image, page_number, pdf_path, before_highlight_file):
@@ -282,12 +323,12 @@ def save_revisions_to_excel(df, output_excel_path):
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
     
-    # Tesseract OCR 검증
-    print("Tesseract OCR 검증 중...")
-    if not verify_tesseract():
-        print("Tesseract OCR 검증에 실패했습니다. 스크립트를 종료합니다.")
+    # EasyOCR 검증
+    print("EasyOCR 검증 중...")
+    if not verify_easyocr():
+        print("EasyOCR 검증에 실패했습니다. 스크립트를 종료합니다.")
         return
-    print("Tesseract OCR 검증에 성공했습니다.")
+    print("EasyOCR 검증에 성공했습니다.")
     
     doc = fitz.open(pdf_path)
     
