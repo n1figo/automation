@@ -1,3 +1,5 @@
+# 결과출력됐으나 텍스트 추출 불가
+
 import fitz  # PyMuPDF (PDF 정보 접근용)
 import pytesseract
 import cv2
