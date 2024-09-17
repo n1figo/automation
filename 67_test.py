@@ -304,6 +304,7 @@ def extract_target_tables_from_page(page, image, page_number, pdf_path, before_h
 def output_highlighted_rows(table_data, output_path):
     if not table_data:
         print("출력할 강조된 행이 없습니다.")
+        return
     with open(output_path, 'w', encoding='utf-8') as f:
         for row in table_data:
             if row.get("변경사항") == "추가":
