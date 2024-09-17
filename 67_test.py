@@ -94,7 +94,7 @@ def extract_target_tables_from_page(page, image, page_number):
             continue
         
         header_row = table_content[0]
-        header_texts = [clean_text_for_excel(cell.strip()) if cell else '' for cell in header_row]
+        header_texts = [clean_text_for_excel(str(cell).strip()) if cell is not None else '' for cell in header_row]
         header_texts_normalized = [text.replace(" ", "").replace("\n", "") for text in header_texts]
         
         if all(any(target_header == header_cell for header_cell in header_texts_normalized) for target_header in TARGET_HEADERS):
@@ -103,7 +103,8 @@ def extract_target_tables_from_page(page, image, page_number):
                 change_detected = False
                 
                 for col_index, header in enumerate(header_texts):
-                    cell_text = clean_text_for_excel(row[col_index].strip()) if col_index < len(row) else ''
+                    cell_value = row[col_index] if col_index < len(row) else None
+                    cell_text = clean_text_for_excel(str(cell_value).strip()) if cell_value is not None else ''
                     header_normalized = header.replace(" ", "").replace("\n", "")
                     if header_normalized in TARGET_HEADERS:
                         cell_texts = cell_text.split('\n')
@@ -117,15 +118,16 @@ def extract_target_tables_from_page(page, image, page_number):
                             row_data['지급금액'] = cell_text
                 
                 # 강조 영역 확인
-                cell = table.cells[row_index][0]
-                if isinstance(cell, (tuple, list)) and len(cell) > 2:
-                    cell_rect = cell[2]
-                    if isinstance(cell_rect, fitz.Rect):
-                        for x1, y1, x2, y2 in highlight_regions:
-                            if (x1 <= cell_rect.x0 <= x2 and y1 <= cell_rect.y0 <= y2) or \
-                               (x1 <= cell_rect.x1 <= x2 and y1 <= cell_rect.y1 <= y2):
-                                change_detected = True
-                                break
+                if len(table.cells) > row_index and len(table.cells[row_index]) > 0:
+                    cell = table.cells[row_index][0]
+                    if isinstance(cell, (tuple, list)) and len(cell) > 2:
+                        cell_rect = cell[2]
+                        if isinstance(cell_rect, fitz.Rect):
+                            for x1, y1, x2, y2 in highlight_regions:
+                                if (x1 <= cell_rect.x0 <= x2 and y1 <= cell_rect.y0 <= y2) or \
+                                   (x1 <= cell_rect.x1 <= x2 and y1 <= cell_rect.y1 <= y2):
+                                    change_detected = True
+                                    break
                 
                 if row_data:
                     row_data["페이지"] = page_number + 1
@@ -134,25 +136,57 @@ def extract_target_tables_from_page(page, image, page_number):
     
     return table_data
 
+
+import fitz  # PyMuPDF
+import pandas as pd
+import numpy as np
+import cv2
+import os
+import re
+from PIL import Image
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+# 이전 코드는 그대로 유지...
+
 def compare_and_update_excel(excel_path, table_data):
-    df = pd.read_excel(excel_path)
-    
-    vectorizer = TfidfVectorizer()
-    df_text = df['보장명1'] + ' ' + df['보장명2'] + ' ' + df['지급사유1'] + ' ' + df['지급사유2'] + ' ' + df['지급금액'].astype(str)
-    df_vectors = vectorizer.fit_transform(df_text)
-    
-    for row in table_data:
-        row_text = row['보장명1'] + ' ' + row['보장명2'] + ' ' + row['지급사유1'] + ' ' + row['지급사유2'] + ' ' + str(row['지급금액'])
-        row_vector = vectorizer.transform([row_text])
+    try:
+        df = pd.read_excel(excel_path)
         
-        similarities = cosine_similarity(row_vector, df_vectors)[0]
-        max_similarity_index = similarities.argmax()
+        # NaN 값을 빈 문자열로 대체
+        df = df.fillna('')
         
-        if similarities[max_similarity_index] > 0.8:  # 유사도 임계값
-            df.at[max_similarity_index, '변경사항'] = row['변경사항']
-    
-    df.to_excel(excel_path, index=False)
-    print(f"엑셀 파일이 업데이트되었습니다: {excel_path}")
+        vectorizer = TfidfVectorizer()
+        df_text = df['보장명1'].astype(str) + ' ' + df['보장명2'].astype(str) + ' ' + \
+                  df['지급사유1'].astype(str) + ' ' + df['지급사유2'].astype(str) + ' ' + \
+                  df['지급금액'].astype(str)
+        
+        # 빈 문자열 확인 및 처리
+        if df_text.str.strip().empty.all():
+            print("경고: 모든 텍스트 데이터가 비어 있습니다.")
+            return
+        
+        df_vectors = vectorizer.fit_transform(df_text)
+        
+        for row in table_data:
+            row_text = (str(row.get('보장명1', '')) + ' ' + str(row.get('보장명2', '')) + ' ' + 
+                        str(row.get('지급사유1', '')) + ' ' + str(row.get('지급사유2', '')) + ' ' + 
+                        str(row.get('지급금액', '')))
+            
+            if row_text.strip():  # 빈 문자열이 아닌 경우에만 처리
+                row_vector = vectorizer.transform([row_text])
+                similarities = cosine_similarity(row_vector, df_vectors)[0]
+                max_similarity_index = similarities.argmax()
+                
+                if similarities[max_similarity_index] > 0.8:  # 유사도 임계값
+                    df.at[max_similarity_index, '변경사항'] = row['변경사항']
+            else:
+                print(f"경고: 빈 텍스트 데이터 무시됨 - {row}")
+        
+        df.to_excel(excel_path, index=False)
+        print(f"엑셀 파일이 업데이트되었습니다: {excel_path}")
+    except Exception as e:
+        print(f"엑셀 파일 처리 중 오류 발생: {str(e)}")
 
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
