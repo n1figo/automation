@@ -48,7 +48,8 @@ def detect_emphasized_color_on_page(page_image):
     
     for y in range(height):
         for x in range(width):
-            pixel_color = tuple(np.uint8(img_array[y, x]))  # np.uint8 형태로 변환된 색상값
+            pixel_color = tuple(img_array[y, x])
+            
             # 흰색, 검정색, 회색이 아닌 색상 감지
             if not (is_similar_color(pixel_color, WHITE_COLOR) or
                     is_similar_color(pixel_color, BLACK_COLOR) or
@@ -151,11 +152,12 @@ def extract_target_tables_from_page(page, page_image, page_number, emphasized_co
                             bg_color = get_cell_background_color(cell_image)
                             cell_bg_color = bg_color
                             
+                            print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index}) 배경색: {bg_color}")
+                            
                             # 페이지 전체에서 강조 색상이 발견된 경우
                             if bg_color in emphasized_colors:
                                 change_detected = True
-                            if DEBUG_MODE:
-                                print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index}) 배경색: {bg_color}")
+                                print(f"강조 색상 감지: 페이지 {page_number + 1}, 셀 ({row_index}, {col_index})")
                 
                 if row_data:
                     row_data["페이지"] = page_number + 1
@@ -165,26 +167,22 @@ def extract_target_tables_from_page(page, page_image, page_number, emphasized_co
     return table_data
 
 # 메인 함수
-def main(pdf_path, output_excel_path, target_page=50):
-    print("PDF에서 51페이지 개정된 부분을 추출합니다...")
+def main(pdf_path, output_excel_path):
+    print("PDF에서 개정된 부분을 추출합니다...")
     doc = fitz.open(pdf_path)
-    total_pages = len(doc)
     
-    if target_page >= total_pages:
-        print(f"PDF에 {target_page + 1} 페이지가 존재하지 않습니다.")
-        return
-
-    # PDF에서 페이지 이미지를 추출
-    images = convert_from_path(pdf_path, dpi=200, fmt='png')
-    
-    page_number = target_page  # 51페이지를 처리 (0부터 시작하므로 50번째 페이지)
+    # 51페이지만 처리
+    page_number = 50  # 0-based index, so 50 is actually page 51
     page = doc[page_number]
-    page_image = images[page_number]
+    images = convert_from_path(pdf_path, first_page=page_number+1, last_page=page_number+1, dpi=200, fmt='png')
+    page_image = images[0]
     
     # 페이지에서 강조 색상을 먼저 감지
     color_detected, emphasized_colors = detect_emphasized_color_on_page(page_image)
     if color_detected:
         print(f"페이지 {page_number + 1}에서 강조 색상 발견: {emphasized_colors}")
+    else:
+        print(f"페이지 {page_number + 1}에서 강조 색상이 발견되지 않았습니다.")
     
     # 페이지에서 표 추출 및 셀 배경색 분석
     table_data = extract_target_tables_from_page(page, page_image, page_number, emphasized_colors)
