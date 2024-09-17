@@ -20,8 +20,8 @@ def is_cell_shaded(image):
     conf = d['conf']
     n_boxes = len(d['text'])
 
-    # 신뢰도가 -1인 영역은 빈 공간 또는 배경으로 판단
-    empty_areas = sum(1 for c in conf if int(c) == -1)
+    # 신뢰도가 -1이거나 0 이하인 영역은 빈 공간 또는 배경으로 판단
+    empty_areas = sum(1 for c in conf if int(c) <= 0)
 
     # 전체 영역 대비 빈 공간의 비율 계산
     empty_ratio = empty_areas / n_boxes if n_boxes > 0 else 0
@@ -34,10 +34,11 @@ def is_cell_shaded(image):
 
 # 한 페이지에서 표와 셀의 음영 여부를 추출하는 함수
 def extract_tables_from_page(page):
-    tables = page.get_text("blocks")
+    text_dict = page.get_text("dict")
+    blocks = text_dict['blocks']
     page_tables = []
 
-    for block in tables:
+    for block in blocks:
         if block['type'] == 0:  # 텍스트 블록인 경우
             # 블록 내의 줄과 스팬을 통해 텍스트와 위치를 얻습니다.
             lines = block['lines']
