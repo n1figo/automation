@@ -3,6 +3,8 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 from openpyxl.styles import Alignment
+import pytesseract
+from pytesseract import Output
 import numpy as np
 import concurrent.futures
 import os
@@ -10,62 +12,63 @@ from typing import List, Tuple
 from PIL import Image
 import io
 
-# 일반적인 배경색을 제외하는 함수
-def is_common_background_color(avg_color, color_tolerance):
-    white = np.array([1, 1, 1])
-    gray = np.array([0.5, 0.5, 0.5])
-    black = np.array([0, 0, 0])
+# 셀의 이미지를 추출하고 Tesseract로 분석하여 음영 여부를 판단하는 함수
+def is_cell_shaded(image):
+    # 이미지에서 텍스트 없이 빈 공간의 픽셀 수를 계산
+    # Tesseract의 신뢰도(confidence)를 이용하여 빈 영역을 찾음
+    d = pytesseract.image_to_data(image, output_type=Output.DICT)
+    conf = d['conf']
+    n_boxes = len(d['text'])
 
-    # 평균 색상과 기준 색상의 차이를 계산
-    diff_white = np.linalg.norm(avg_color - white)
-    diff_gray = np.linalg.norm(avg_color - gray)
-    diff_black = np.linalg.norm(avg_color - black)
+    # 신뢰도가 -1인 영역은 빈 공간 또는 배경으로 판단
+    empty_areas = sum(1 for c in conf if int(c) == -1)
 
-    # 색상 차이가 허용 오차 이내이면 일반적인 배경색으로 간주
-    if diff_white <= color_tolerance or diff_gray <= color_tolerance or diff_black <= color_tolerance:
+    # 전체 영역 대비 빈 공간의 비율 계산
+    empty_ratio = empty_areas / n_boxes if n_boxes > 0 else 0
+
+    # 빈 공간의 비율이 높으면 음영 처리된 것으로 판단
+    if empty_ratio > 0.5:  # 임계값은 조정 가능
         return True
-    return False
+    else:
+        return False
 
-# 셀의 배경색을 얻는 함수
-def get_cell_background_color(page, rect):
-    # 셀 영역을 이미지로 클립
-    pix = page.get_pixmap(clip=rect, colorspace=fitz.csRGB)
-    img_data = pix.tobytes(output="png")
-    # 이미지를 PIL 이미지로 로드
-    image = Image.open(io.BytesIO(img_data))
-    # 이미지를 numpy 배열로 변환하고 RGB 값을 [0,1] 범위로 정규화
-    image_np = np.array(image) / 255.0
-    # 평균 색상 계산
-    avg_color = image_np.mean(axis=(0, 1))
-    return avg_color
-
-# 한 페이지에서 표와 셀의 배경색을 추출하는 함수
-def extract_tables_from_page(page, color_tolerance):
-    tables = page.find_tables()
+# 한 페이지에서 표와 셀의 음영 여부를 추출하는 함수
+def extract_tables_from_page(page):
+    tables = page.get_text("blocks")
     page_tables = []
 
-    for table in tables:
-        data = []
-        for row in table.rows:
-            row_data = []
-            for cell in row.cells:
-                cell_rect = cell.rect
-                cell_text = cell.get_text().strip()
-                avg_color = get_cell_background_color(page, cell_rect)
-                if not is_common_background_color(avg_color, color_tolerance):
-                    status = "추가"
-                else:
-                    status = "유지"
-                row_data.append((cell_text, status))
-            data.append(row_data)
-        page_tables.append(data)
+    for block in tables:
+        if block['type'] == 0:  # 텍스트 블록인 경우
+            # 블록 내의 줄과 스팬을 통해 텍스트와 위치를 얻습니다.
+            lines = block['lines']
+            data = []
+            for line in lines:
+                row_data = []
+                for span in line['spans']:
+                    text = span['text'].strip()
+                    bbox = fitz.Rect(span['bbox'])
+                    # 셀의 이미지를 추출
+                    pix = page.get_pixmap(clip=bbox, colorspace=fitz.csRGB)
+                    img_data = pix.tobytes(output="png")
+                    image = Image.open(io.BytesIO(img_data))
+                    # 셀이 음영 처리되었는지 판단
+                    if is_cell_shaded(image):
+                        status = "추가"
+                    else:
+                        status = "유지"
+                    row_data.append((text, status))
+                if row_data:
+                    data.append(row_data)
+            if data:
+                page_tables.append(data)
     return page_tables
 
 # 병렬 처리를 위한 함수
 def process_page(args):
-    page_number, doc, color_tolerance = args
+    page_number, pdf_path = args
+    doc = fitz.open(pdf_path)
     page = doc.load_page(page_number)
-    tables = extract_tables_from_page(page, color_tolerance)
+    tables = extract_tables_from_page(page)
     return tables
 
 # 엑셀 파일로 저장하는 함수
@@ -79,45 +82,39 @@ def save_tables_to_excel(all_tables, output_excel_path):
     for tables in all_tables:
         for table in tables:
             for row in table:
-                for col_num, (text, status) in enumerate(row, start=1):
+                col_num = 1
+                for text, status in row:
                     cell = sheet.cell(row=row_num, column=col_num, value=text)
                     cell.alignment = Alignment(wrap_text=True)
                     if status == "추가":
                         cell.fill = yellow_fill
+                    col_num += 1
                 row_num += 1
             row_num += 2  # 테이블 간 간격
     workbook.save(output_excel_path)
     print(f"Data saved to {output_excel_path}")
 
 # 메인 함수
-def main(pdf_path, output_excel_path, color_tolerance=0.3, max_workers=4):
+def main(pdf_path, output_excel_path, max_workers=4):
     doc = fitz.open(pdf_path)
-    num_pages = len(doc)
+    num_pages = doc.page_count
     all_tables = []
 
     # 병렬 처리 설정
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # 각 페이지 번호와 필요한 인자를 튜플로 전달
-        args = [(page_num, pdf_path, color_tolerance) for page_num in range(num_pages)]
+        args = [(page_num, pdf_path) for page_num in range(num_pages)]
         # 결과를 받아옴
-        for result in executor.map(process_page_pool, args):
+        results = executor.map(process_page, args)
+        for result in results:
             all_tables.append(result)
 
     # 결과를 엑셀로 저장
     save_tables_to_excel(all_tables, output_excel_path)
 
-# ProcessPoolExecutor에서 PDF 문서를 다시 열어야 함
-def process_page_pool(args):
-    page_number, pdf_path, color_tolerance = args
-    doc = fitz.open(pdf_path)
-    page = doc.load_page(page_number)
-    tables = extract_tables_from_page(page, color_tolerance)
-    return tables
-
 if __name__ == "__main__":
-    pdf_path = "/path/to/your.pdf"  # 처리할 PDF 파일 경로로 변경하세요
-    output_excel_path = "/path/to/output.xlsx"  # 저장할 엑셀 파일 경로로 변경하세요
-    color_tolerance = 0.3  # 색상 판별 기준 (0에 가까울수록 엄격)
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    output_excel_path = "/workspaces/automation/output/extracted_tables.xlsx"
     max_workers = 4  # 병렬 처리 시 사용할 프로세스 수
 
-    main(pdf_path, output_excel_path, color_tolerance, max_workers)
+    main(pdf_path, output_excel_path, max_workers)
