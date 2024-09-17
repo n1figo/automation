@@ -1,11 +1,9 @@
 import fitz  # PyMuPDF
+import pdfplumber
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
-from PIL import Image
-import numpy as np
-import io
 import re
 
 # 디버깅 모드 설정 (True로 설정하면 색상 정보를 출력합니다)
@@ -13,15 +11,6 @@ DEBUG_MODE = False
 
 # 타겟 헤더 정의
 TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
-
-# 기본 글꼴 색상 정의 (RGB 값은 0~255 범위의 int 값)
-DEFAULT_FONT_COLOR = (0, 0, 0)  # 검정색
-
-# 기본 배경색 정의 (흰색)
-DEFAULT_BG_COLOR = (255, 255, 255)  # 흰색
-
-# 색상 비교를 위한 허용 오차
-COLOR_TOLERANCE = 30  # 0~255 범위에서의 차이 값
 
 # 허용되지 않는 문자를 제거하는 함수
 def remove_illegal_characters(text):
@@ -42,33 +31,26 @@ def clean_text_for_excel(text: str) -> str:
         return text  # 줄바꿈을 제거하지 않음
     return text
 
-# 색상 차이를 계산하는 함수
-def color_difference(color1, color2):
-    return sum(abs(color1[i] - color2[i]) for i in range(3))
-
-# 셀의 변경사항 여부를 판단하는 함수 (이미지 기반)
-def check_cell_for_changes(page, cell_rect):
-    # 셀 영역을 이미지로 추출
-    pix = page.get_pixmap(clip=cell_rect, colorspace=fitz.csRGB)
-    img_data = pix.tobytes("png")
-    img = Image.open(io.BytesIO(img_data))
-    # 이미지에서 평균 색상 계산
-    img_array = np.array(img)
-    # 투명도 채널 제거 (RGBA인 경우)
-    if img_array.shape[2] == 4:
-        img_array = img_array[:, :, :3]
-    avg_color = tuple(img_array.reshape(-1, 3).mean(axis=0).astype(int))
-    # 디버깅 모드일 때 색상 정보 출력
-    if DEBUG_MODE:
-        print(f"셀 위치: {cell_rect}, 평균 배경색: {avg_color}")
-    # 기본 배경색과의 색상 차이 계산
-    diff = color_difference(avg_color, DEFAULT_BG_COLOR)
-    if diff > COLOR_TOLERANCE:
-        return True  # 변경사항이 있는 셀
-    return False  # 변경사항이 없는 셀
+# 셀의 변경사항 여부를 판단하는 함수 (pdfplumber 사용)
+def check_cell_for_changes(cell_rect, fills):
+    # 초기값 설정
+    change_detected = False
+    bg_color = None
+    max_overlap_area = 0
+    for fill in fills:
+        fill_rect = fill['rect']
+        overlap_rect = cell_rect & fill_rect  # 교집합 영역 계산
+        if overlap_rect.is_empty:
+            continue
+        overlap_area = overlap_rect.get_area()
+        if overlap_area > max_overlap_area:
+            max_overlap_area = overlap_area
+            bg_color = fill['color']
+            change_detected = True
+    return change_detected, bg_color
 
 # 페이지에서 타겟 표를 추출하는 함수
-def extract_target_tables_from_page(page, page_number):
+def extract_target_tables_from_page(page, fills, page_number):
     print(f"페이지 {page_number + 1} 처리 중...")
     table_data = []
     tables = page.find_tables()
@@ -112,6 +94,7 @@ def extract_target_tables_from_page(page, page_number):
                 row = table_content[row_index]
                 row_data = {}
                 change_detected = False
+                cell_bg_color = None  # 초기화
                 for col_index in range(num_cols):
                     header = header_texts[col_index].replace(" ", "").replace("\n", "")
                     # 셀 값 처리 시 None 체크 추가
@@ -139,13 +122,17 @@ def extract_target_tables_from_page(page, page_number):
                         cell_rect = cell_dict.get((row_index, col_index))
                         if cell_rect:
                             # 셀에 변경사항이 있는지 확인
-                            if check_cell_for_changes(page, cell_rect):
+                            detected, bg_color = check_cell_for_changes(cell_rect, fills)
+                            if detected:
                                 change_detected = True
+                            cell_bg_color = bg_color  # 배경색 기록
                 if row_data:
                     # 페이지 번호 추가
                     row_data["페이지"] = page_number + 1
                     # 변경사항 설정
                     row_data["변경사항"] = "추가" if change_detected else "유지"
+                    # 배경색 추가
+                    row_data["배경색"] = str(cell_bg_color) if cell_bg_color else ''
                     table_data.append(row_data)
     return table_data
 
@@ -155,19 +142,42 @@ def main(pdf_path, output_excel_path):
     doc = fitz.open(pdf_path)
     total_pages = len(doc)
     all_table_data = []
-    for page_number in range(total_pages):
-        page = doc[page_number]
-        table_data = extract_target_tables_from_page(page, page_number)
-        all_table_data.extend(table_data)
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_number in range(total_pages):
+            page = doc[page_number]
+            pdfplumber_page = pdf.pages[page_number]
+            page_height = pdfplumber_page.height
+            fills = pdfplumber_page.rects
+            # 좌표 변환 및 fills 조정
+            adjusted_fills = []
+            for fill in fills:
+                x0 = fill['x0']
+                x1 = fill['x1']
+                y0 = fill['y0']
+                y1 = fill['y1']
+                # 좌표 변환 (pdfplumber와 fitz의 좌표계 차이 보정)
+                fitz_y0 = page_height - y1
+                fitz_y1 = page_height - y0
+                fill_rect = fitz.Rect(x0, fitz_y0, x1, fitz_y1)
+                # 색상 정보 가져오기
+                color = fill.get('non_stroking_color', None)
+                adjusted_fill = {
+                    'rect': fill_rect,
+                    'color': color
+                }
+                adjusted_fills.append(adjusted_fill)
+            # 테이블 데이터 추출
+            table_data = extract_target_tables_from_page(page, adjusted_fills, page_number)
+            all_table_data.extend(table_data)
     if all_table_data:
         # 데이터프레임 생성
         df = pd.DataFrame(all_table_data)
         # 결측치 처리 (컬럼이 없을 경우 대비)
-        for col in ["보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액"]:
+        for col in ["보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "배경색"]:
             if col not in df.columns:
                 df[col] = ''
         # 컬럼 순서 지정
-        df = df[["페이지", "보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "변경사항"]]
+        df = df[["페이지", "보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "변경사항", "배경색"]]
         # 엑셀로 저장
         print("개정된 부분을 엑셀 파일로 저장합니다...")
         save_revisions_to_excel(df, output_excel_path)
@@ -199,11 +209,14 @@ def save_revisions_to_excel(df, output_excel_path):
     workbook.save(output_excel_path)
     print(f"개정된 부분이 '{output_excel_path}'에 저장되었습니다.")
 
-
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_excel_path = "/workspaces/automation/output/extracted_tables.xlsx"
     main(pdf_path, output_excel_path)
+
+
+
+
 
 
 
