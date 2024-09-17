@@ -1,11 +1,10 @@
 import fitz  # PyMuPDF
 import pandas as pd
-from pdf2image import convert_from_path
-from PIL import Image
 import numpy as np
-import re
+import cv2
 import os
-from collections import Counter
+import re
+from PIL import Image
 
 # 디버깅 모드 설정
 DEBUG_MODE = True
@@ -13,18 +12,10 @@ DEBUG_MODE = True
 # 타겟 헤더 정의
 TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
 
-# 특정 색상 범위 (흰색, 검정색, 회색을 제외하는 범위)
-WHITE_COLOR = (255, 255, 255)
-BLACK_COLOR = (0, 0, 0)
-GRAY_COLOR = (200, 200, 200)  # 회색 범위를 넓힘
+# 이미지 저장 경로 설정
+IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
+os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
-# 강조 색상 정의 (살색과 주황색)
-HIGHLIGHT_COLORS = {
-    "살색": (255, 218, 185),
-    "주황색": (255, 165, 0)
-}
-
-# 허용되지 않는 문자를 제거하는 함수
 def remove_illegal_characters(text):
     ILLEGAL_CHARACTERS_RE = re.compile(
         '['
@@ -35,50 +26,84 @@ def remove_illegal_characters(text):
     )
     return ILLEGAL_CHARACTERS_RE.sub('', text)
 
-# 텍스트를 엑셀에 맞게 정리 (줄바꿈 유지)
 def clean_text_for_excel(text: str) -> str:
     if isinstance(text, str):
         text = remove_illegal_characters(text)
         return text  # 줄바꿈을 제거하지 않음
     return text
 
-# 색상 유사도 비교 함수
-def is_similar_color(c1, c2, tolerance=30):
-    return all(abs(c1[i] - c2[i]) <= tolerance for i in range(3))
+def pdf_to_image(page):
+    pix = page.get_pixmap()
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    return np.array(img)
 
-# 강조 색상 감지 함수
-def detect_highlight_color(color):
-    for name, highlight_color in HIGHLIGHT_COLORS.items():
-        if is_similar_color(color, highlight_color, tolerance=50):
-            return True, name
-    return False, None
+def detect_highlights(image, page_num):
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    s = hsv[:,:,1]
+    v = hsv[:,:,2]
+    
+    saturation_threshold = 30
+    saturation_mask = s > saturation_threshold
+    
+    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
+    
+    kernel = np.ones((5,5), np.uint8)
+    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+    
+    # 디버깅: 마스크 이미지 저장
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
+    
+    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 디버깅: 윤곽선이 그려진 이미지 저장
+    contour_image = image.copy()
+    cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
+    
+    return contours
 
-# 이미지에서 가장 빈번한 강조 색상 감지 함수
-def detect_most_common_highlight_color(image):
-    img_array = np.array(image)
-    height, width, _ = img_array.shape
-    
-    highlight_colors = []
-    for y in range(height):
-        for x in range(width):
-            pixel_color = tuple(img_array[y, x])
-            is_highlight, color_name = detect_highlight_color(pixel_color)
-            if is_highlight:
-                highlight_colors.append(color_name)
-    
-    if not highlight_colors:
-        return False, None
-    
-    color_counts = Counter(highlight_colors)
-    most_common_color = color_counts.most_common(1)[0][0]
-    
-    return True, most_common_color
+def get_capture_regions(contours, image_height, image_width):
+    if not contours:
+        return []
 
-# 페이지에서 타겟 표를 추출하는 함수
-def extract_target_tables_from_page(page, page_image, page_number):
+    capture_height = image_height // 3
+    sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
+    
+    regions = []
+    current_region = None
+    
+    for contour in sorted_contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        if current_region is None:
+            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
+        elif y - current_region[1] < capture_height//2:
+            current_region[1] = min(image_height, y + h + capture_height//2)
+        else:
+            regions.append(current_region)
+            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
+    
+    if current_region:
+        regions.append(current_region)
+    
+    return regions
+
+def extract_target_tables_from_page(page, image, page_number):
     print(f"페이지 {page_number + 1} 처리 중...")
     tables = page.find_tables()
     print(f"페이지 {page_number + 1}에서 찾은 테이블 수: {len(tables.tables)}")
+    
+    contours = detect_highlights(image, page_number + 1)
+    highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
+    
+    # 디버깅: 강조 영역이 표시된 이미지 저장
+    debug_image = image.copy()
+    for start_y, end_y in highlight_regions:
+        cv2.rectangle(debug_image, (0, start_y), (image.shape[1], end_y), (255, 0, 0), 2)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlights.png'), cv2.cvtColor(debug_image, cv2.COLOR_RGB2BGR))
     
     table_data = []
     for table_index, table in enumerate(tables.tables):
@@ -92,31 +117,12 @@ def extract_target_tables_from_page(page, page_image, page_number):
         header_texts_normalized = [text.replace(" ", "").replace("\n", "") for text in header_texts]
         
         if all(any(target_header == header_cell for header_cell in header_texts_normalized) for target_header in TARGET_HEADERS):
-            cell_dict = {}
-            for cell in table.cells:
-                if len(cell) == 6:
-                    cell_row = cell[0]
-                    cell_col = cell[1]
-                    cell_bbox = cell[2:6]
-                elif len(cell) >= 3 and isinstance(cell[2], (tuple, list)):
-                    cell_row = cell[0]
-                    cell_col = cell[1]
-                    cell_bbox = cell[2]
-                else:
-                    continue
-                if len(cell_bbox) == 4:
-                    cell_rect = fitz.Rect(*cell_bbox)
-                else:
-                    continue
-                cell_dict[(cell_row, cell_col)] = cell_rect
-            
             num_rows = len(table_content)
             num_cols = len(header_texts)
             for row_index in range(1, num_rows):
                 row = table_content[row_index]
                 row_data = {}
                 change_detected = False
-                cell_bg_color = None
                 
                 for col_index in range(num_cols):
                     header = header_texts[col_index].replace(" ", "").replace("\n", "")
@@ -139,52 +145,52 @@ def extract_target_tables_from_page(page, page_image, page_number):
                                 row_data['지급사유2'] = ''
                         else:
                             row_data[header] = cell_text
-                        
-                        cell_rect = cell_dict.get((row_index, col_index))
-                        if cell_rect:
-                            x0, y0, x1, y1 = cell_rect
-                            x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
-                            cell_image = page_image.crop((x0, y0, x1, y1))
-                            
-                            color_detected, color_name = detect_most_common_highlight_color(cell_image)
-                            if color_detected:
-                                change_detected = True
-                                cell_bg_color = color_name
-                                print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index})에서 강조색 감지: {color_name}")
+                
+                # 강조 영역 확인
+                if len(table.cells) > row_index and len(table.cells[row_index]) > 0:
+                    cell = table.cells[row_index][0]
+                    if isinstance(cell, (tuple, list)) and len(cell) > 2:
+                        cell_rect = cell[2]
+                        if isinstance(cell_rect, fitz.Rect):
+                            cell_y = cell_rect.y1
+                            for start_y, end_y in highlight_regions:
+                                if start_y <= cell_y <= end_y:
+                                    change_detected = True
+                                    break
                 
                 if row_data:
                     row_data["페이지"] = page_number + 1
                     row_data["변경사항"] = "추가" if change_detected else "유지"
-                    row_data["배경색"] = cell_bg_color if cell_bg_color else ''
                     table_data.append(row_data)
+    
     return table_data
 
-# 메인 함수
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
     doc = fitz.open(pdf_path)
     
-    # 51페이지만 처리
-    page_number = 50  # 0-based index, so 50 is actually page 51
+    # 51페이지만 처리 (0-based index이므로 50)
+    page_number = 50
     page = doc[page_number]
-    images = convert_from_path(pdf_path, first_page=page_number+1, last_page=page_number+1, dpi=200, fmt='png')
-    page_image = images[0]
+    image = pdf_to_image(page)
     
-    # 페이지에서 표 추출 및 셀 배경색 분석
-    table_data = extract_target_tables_from_page(page, page_image, page_number)
+    # 원본 이미지 저장
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_original.png'), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    
+    # 페이지에서 표 추출 및 강조 영역 분석
+    table_data = extract_target_tables_from_page(page, image, page_number)
     
     if table_data:
         df = pd.DataFrame(table_data)
-        for col in ["보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "배경색"]:
+        for col in ["보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액"]:
             if col not in df.columns:
                 df[col] = ''
-        df = df[["페이지", "보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "변경사항", "배경색"]]
+        df = df[["페이지", "보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "변경사항"]]
         save_revisions_to_excel(df, output_excel_path)
         print("작업이 완료되었습니다.")
     else:
         print("지정된 헤더를 가진 표를 찾을 수 없습니다.")
 
-# 엑셀 파일로 저장하는 함수
 def save_revisions_to_excel(df, output_excel_path):
     df.to_excel(output_excel_path, index=False)
     print(f"개정된 부분이 '{output_excel_path}'에 저장되었습니다.")
