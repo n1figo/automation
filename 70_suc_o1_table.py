@@ -50,11 +50,16 @@ def check_cell_for_changes(cell_rect, fills):
     return change_detected, bg_color
 
 # 페이지에서 타겟 표를 추출하는 함수
-def extract_target_tables_from_page(page, fills, page_number):
+def extract_target_tables_from_page(page, page_image, page_number):
     print(f"페이지 {page_number + 1} 처리 중...")
-    table_data = []
     tables = page.find_tables()
-    for table in tables:
+    
+    # tables.tables 속성을 통해 실제 테이블 리스트에 접근
+    print(f"페이지 {page_number + 1}에서 찾은 테이블 수: {len(tables.tables)}")
+    
+    table_data = []
+    for table_index, table in enumerate(tables.tables):
+        print(f"테이블 {table_index + 1} 처리 중...")
         # 테이블 데이터 추출
         table_content = table.extract()
         if not table_content:

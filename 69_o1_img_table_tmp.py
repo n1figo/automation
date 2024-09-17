@@ -7,7 +7,7 @@ import re
 import os
 
 # 디버깅 모드 설정 (True로 설정하면 색상 정보를 출력합니다)
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # 타겟 헤더 정의
 TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
@@ -33,6 +33,8 @@ def clean_text_for_excel(text: str) -> str:
 
 # 셀의 변경사항 여부를 판단하는 함수 (이미지 기반 하이라이트 감지)
 def is_cell_highlighted(cell_image):
+    if cell_image.mode != 'RGB':
+        cell_image = cell_image.convert('RGB')
     img_array = np.array(cell_image)
     # 이미지가 흑백이면 RGB로 변환
     if len(img_array.shape) == 2:
@@ -46,13 +48,16 @@ def is_cell_highlighted(cell_image):
     for pixel in pixels:
         r, g, b = pixel
         # 살색 음영 감지 (예시로 RGB 값 범위 설정)
-        if r > 200 and g > 150 and b > 150:
+        if r > 240 and g > 200 and b > 200:
             highlighted = True
             break
     return highlighted
 
 # 셀의 배경색을 추출하는 함수
 def get_cell_background_color(cell_image):
+    # 이미지 모드 확인 및 RGB로 변환
+    if cell_image.mode != 'RGB':
+        cell_image = cell_image.convert('RGB')
     img_array = np.array(cell_image)
     # 이미지가 흑백이면 RGB로 변환
     if len(img_array.shape) == 2:
@@ -62,6 +67,8 @@ def get_cell_background_color(cell_image):
         img_array = img_array[:, :, :3]
     # 이미지에서 주요 색상 추출
     pixels = img_array.reshape(-1, 3)
+    if len(pixels) == 0:
+        return None
     # 배경색 추출 (최빈값)
     counts = {}
     for pixel in pixels:
@@ -73,19 +80,25 @@ def get_cell_background_color(cell_image):
 # 페이지에서 타겟 표를 추출하는 함수
 def extract_target_tables_from_page(page, page_image, page_number):
     print(f"페이지 {page_number + 1} 처리 중...")
-    table_data = []
+    print(f"페이지 이미지 크기: {page_image.size}")
     tables = page.find_tables()
-    for table in tables:
+    print(f"페이지 {page_number + 1}에서 찾은 테이블 수: {len(tables)}")
+    table_data = []
+    for table_index, table in enumerate(tables):
+        print(f"테이블 {table_index + 1} 처리 중...")
         # 테이블 데이터 추출
         table_content = table.extract()
         if not table_content:
+            print("테이블에서 데이터 추출 실패")
             continue
         # 헤더 행 추출 및 정리
         header_row = table_content[0]
+        print(f"헤더 행 내용: {header_row}")
         header_texts = [clean_text_for_excel(cell.strip()) if cell else '' for cell in header_row]
         header_texts_normalized = [text.replace(" ", "").replace("\n", "") for text in header_texts]
         # 타겟 헤더가 모두 포함되어 있는지 확인
         if all(any(target_header == header_cell for header_cell in header_texts_normalized) for target_header in TARGET_HEADERS):
+            print("타겟 헤더를 가진 테이블 발견")
             # 셀 딕셔너리 생성 (셀 위치를 기준으로 매핑)
             cell_dict = {}
             for cell in table.cells:
@@ -142,23 +155,34 @@ def extract_target_tables_from_page(page, page_image, page_number):
                         # 셀 객체 가져오기
                         cell_rect = cell_dict.get((row_index, col_index))
                         if cell_rect:
+                            print(f"셀 ({row_index}, {col_index})의 좌표: {cell_rect}")
                             # 좌표 변환 (PyMuPDF 좌표계에서 이미지 좌표계로)
                             x0, y0, x1, y1 = cell_rect
                             x0 = int(x0)
-                            y0 = int(page_image.height - y1)
+                            y0 = int(y0)
                             x1 = int(x1)
-                            y1 = int(page_image.height - y0)
+                            y1 = int(y1)
                             # 셀 이미지 크롭
-                            cell_image = page_image.crop((x0, y0, x1, y1))
-                            # 배경색 추출
-                            bg_color = get_cell_background_color(cell_image)
-                            cell_bg_color = bg_color
-                            # 셀 하이라이트 여부 판단
-                            if is_cell_highlighted(cell_image):
-                                change_detected = True
-                            # 디버깅 모드일 때 색상 정보 출력
-                            if DEBUG_MODE:
-                                print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index}) - 배경색: {bg_color}, 변경사항 있음: {change_detected}")
+                            try:
+                                cell_image = page_image.crop((x0, y0, x1, y1))
+                                if DEBUG_MODE:
+                                    print(f"셀 이미지 크기: {cell_image.size}")
+                                # 셀 이미지를 파일로 저장하여 확인
+                                cell_image.save(f"cell_image_page{page_number + 1}_{row_index}_{col_index}.png")
+                                # 배경색 추출
+                                bg_color = get_cell_background_color(cell_image)
+                                cell_bg_color = bg_color
+                                # 셀 하이라이트 여부 판단
+                                if is_cell_highlighted(cell_image):
+                                    change_detected = True
+                                # 디버깅 모드일 때 색상 정보 출력
+                                if DEBUG_MODE:
+                                    print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index}) - 배경색: {bg_color}, 변경사항 있음: {change_detected}")
+                            except Exception as e:
+                                print(f"셀 이미지 크롭 또는 처리 중 오류 발생: {e}")
+                    else:
+                        if DEBUG_MODE:
+                            print(f"헤더 '{header}'는 타겟 헤더에 포함되지 않음")
                 if row_data:
                     # 페이지 번호 추가
                     row_data["페이지"] = page_number + 1
@@ -167,6 +191,8 @@ def extract_target_tables_from_page(page, page_image, page_number):
                     # 배경색 추가
                     row_data["배경색"] = str(cell_bg_color) if cell_bg_color else ''
                     table_data.append(row_data)
+        else:
+            print("타겟 헤더를 가진 테이블이 아님")
     return table_data
 
 # 메인 함수
@@ -208,3 +234,9 @@ if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_excel_path = "/workspaces/automation/output/extracted_tables.xlsx"
     main(pdf_path, output_excel_path)
+
+
+
+
+
+
