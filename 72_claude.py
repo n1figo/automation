@@ -1,9 +1,8 @@
 import fitz  # PyMuPDF
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import Alignment
 import logging
 import os
 from typing import List, Tuple, Any
@@ -14,17 +13,13 @@ import re
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 텍스트를 엑셀에 맞게 정리 (줄바꿈 유지)
-def clean_text_for_excel(text: str) -> str:
-    if isinstance(text, str):
-        # 제어 문자 제거 (줄바꿈은 유지)
-        text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
-        return text  # 줄바꿈을 제거하지 않음
-    return text
+# 텍스트를 개별 보장 항목으로 분리
+def split_coverage_items(text: str) -> List[str]:
+    items = re.findall(r'[가-힣a-zA-Z0-9]+\([^)]+\)(?:\【[^】]+\】)?', text)
+    return items if items else [text]
 
 # 색상 체크 함수
 def check_text_color(span) -> bool:
-    # 흰색, 검정색, 회색 제외한 텍스트 색상 필터링
     common_colors = {(1, 1, 1), (0, 0, 0), (0.5, 0.5, 0.5)}  # RGB 값
     color = span.get('color', None)
     return color and color not in common_colors
@@ -38,21 +33,17 @@ def extract_text_and_colors(page: fitz.Page) -> List[Tuple[str, str]]:
         if 'lines' in block:
             for line in block['lines']:
                 for span in line['spans']:
-                    text = clean_text_for_excel(span['text'])
-                    if check_text_color(span):
-                        extracted_text.append((text, "추가"))
-                    else:
-                        extracted_text.append((text, "유지"))
+                    text = span['text']
+                    status = "추가" if check_text_color(span) else "유지"
+                    extracted_text.append((text, status))
     
     return extracted_text
 
 # PDF 테이블 추출 클래스
 class PDFTableExtractor:
-    def __init__(self, pdf_path: str, tessdata_dir: str = None):
+    def __init__(self, pdf_path: str):
         self.pdf_path = pdf_path
         self.doc = fitz.open(pdf_path)
-        if tessdata_dir:
-            os.environ['TESSDATA_PREFIX'] = tessdata_dir
         
     def extract_tables_with_titles(self) -> List[Tuple[str, pd.DataFrame]]:
         all_tables = []
@@ -91,8 +82,22 @@ class PDFTableExtractor:
         return "Untitled Table"
     
     def _table_to_dataframe(self, table: Any) -> pd.DataFrame:
-        df = pd.DataFrame(table.extract())
-        df = df.applymap(clean_text_for_excel)
+        data = table.extract()
+        columns = data[0]
+        rows = data[1:]
+        
+        processed_rows = []
+        for row in rows:
+            processed_row = []
+            for cell in row:
+                items = split_coverage_items(cell)
+                processed_row.extend(items)
+            processed_rows.append(processed_row)
+        
+        max_len = max(len(row) for row in processed_rows)
+        columns = columns + [f'추가항목_{i}' for i in range(len(columns), max_len)]
+        
+        df = pd.DataFrame(processed_rows, columns=columns)
         return df
     
     def _merge_tables_with_same_title(self, tables: List[Tuple[str, pd.DataFrame]]) -> List[Tuple[str, pd.DataFrame]]:
@@ -115,18 +120,15 @@ class ExcelWriterWithChanges:
         row = 1
         
         for title, df in tables:
-            self.sheet.cell(row=row, column=1, value=clean_text_for_excel(title))
+            self.sheet.cell(row=row, column=1, value=title)
             row += 1
-            
-            # "변경사항" 컬럼 추가
-            df["변경사항"] = df.apply(lambda row: "추가" if any(cell == "추가" for cell in row.values) else "유지", axis=1)
             
             for r in dataframe_to_rows(df, index=False, header=True):
                 for col_num, cell_value in enumerate(r, start=1):
                     cell = self.sheet.cell(row=row, column=col_num)
-                    cell.value = clean_text_for_excel(cell_value)
-                    cell.alignment = Alignment(wrap_text=True, vertical='top')  # 줄바꿈 및 상단 정렬 적용
-                    if "추가" in r:
+                    cell.value = cell_value
+                    cell.alignment = Alignment(wrap_text=True, vertical='top')
+                    if "추가" in str(cell_value):
                         cell.fill = yellow_fill
                 row += 1
             row += 2
@@ -145,12 +147,12 @@ class ExcelWriterWithChanges:
             self.sheet.column_dimensions[column_letter].width = adjusted_width
         
         self.workbook.save(self.output_path)
-        logger.info(f"Tables saved with '변경사항' to {self.output_path}")
+        logger.info(f"Tables saved with changes to {self.output_path}")
 
 # 메인 함수
-def main(pdf_path: str, output_excel_path: str, tessdata_dir: str = None):
+def main(pdf_path: str, output_excel_path: str):
     try:
-        extractor = PDFTableExtractor(pdf_path, tessdata_dir)
+        extractor = PDFTableExtractor(pdf_path)
         
         # 테이블 추출 및 색상 감지
         tables = extractor.extract_tables_with_titles()
@@ -166,5 +168,4 @@ def main(pdf_path: str, output_excel_path: str, tessdata_dir: str = None):
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_excel_path = "/workspaces/automation/output/extracted_tables.xlsx"
-    tessdata_dir = "/usr/share/tesseract-ocr/4.00/tessdata"  # Tesseract OCR 언어 데이터 파일이 있는 디렉토리
-    main(pdf_path, output_excel_path, tessdata_dir)
+    main(pdf_path, output_excel_path)
