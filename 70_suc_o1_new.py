@@ -3,22 +3,25 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
+from PIL import Image
+import numpy as np
+import io
 import re
+
+# 디버깅 모드 설정 (True로 설정하면 색상 정보를 출력합니다)
+DEBUG_MODE = False
 
 # 타겟 헤더 정의
 TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
 
-# 기본 글꼴 색상 정의 (RGB 값은 0~1 범위의 float 값)
+# 기본 글꼴 색상 정의 (RGB 값은 0~255 범위의 int 값)
 DEFAULT_FONT_COLOR = (0, 0, 0)  # 검정색
 
-# 기본 배경색 목록 정의 (흰색, 헤더의 회색)
-DEFAULT_BG_COLORS = [
-    (1, 1, 1),          # 흰색
-    (0.85, 0.85, 0.85), # 헤더의 회색 (필요에 따라 조정)
-]
+# 기본 배경색 정의 (흰색)
+DEFAULT_BG_COLOR = (255, 255, 255)  # 흰색
 
 # 색상 비교를 위한 허용 오차
-COLOR_TOLERANCE = 0.05
+COLOR_TOLERANCE = 30  # 0~255 범위에서의 차이 값
 
 # 허용되지 않는 문자를 제거하는 함수
 def remove_illegal_characters(text):
@@ -39,58 +42,29 @@ def clean_text_for_excel(text: str) -> str:
         return text  # 줄바꿈을 제거하지 않음
     return text
 
-# 색상이 기본 색상인지 판단하는 함수
-def is_default_color(color, default_colors, tolerance=COLOR_TOLERANCE):
-    for default_color in default_colors:
-        if all(abs(color[i] - default_color[i]) <= tolerance for i in range(3)):
-            return True
-    return False
+# 색상 차이를 계산하는 함수
+def color_difference(color1, color2):
+    return sum(abs(color1[i] - color2[i]) for i in range(3))
 
-# 색상 값을 RGB 튜플로 변환하는 함수
-def get_rgb_color(color_value):
-    if isinstance(color_value, int) or isinstance(color_value, float):
-        # DeviceGray 색상 공간인 경우
-        gray = float(color_value)
-        return (gray, gray, gray)
-    elif isinstance(color_value, list) or isinstance(color_value, tuple):
-        if len(color_value) == 3:
-            # 이미 RGB 형태인 경우
-            return tuple(float(c) for c in color_value)
-        elif len(color_value) == 4:
-            # CMYK를 RGB로 변환 (간단한 방법으로 처리)
-            c, m, y, k = map(float, color_value)
-            r = (1 - min(1, c + k))
-            g = (1 - min(1, m + k))
-            b = (1 - min(1, y + k))
-            return (r, g, b)
-        else:
-            # 예외 처리: 예상치 못한 길이의 리스트인 경우 회색 반환
-            return (0.5, 0.5, 0.5)
-    else:
-        # 예외 처리: 예상치 못한 타입의 경우 회색 반환
-        return (0.5, 0.5, 0.5)
-
-# 셀의 변경사항 여부를 판단하는 함수
+# 셀의 변경사항 여부를 판단하는 함수 (이미지 기반)
 def check_cell_for_changes(page, cell_rect):
-    # 페이지에서 텍스트 블록을 가져옵니다.
-    text_dict = page.get_text("dict")
-    blocks = text_dict["blocks"]
-    for block in blocks:
-        if block["type"] == 0:  # 텍스트 블록인 경우
-            for line in block["lines"]:
-                for span in line["spans"]:
-                    span_rect = fitz.Rect(span["bbox"])
-                    if cell_rect.intersects(span_rect):
-                        # 글꼴 색상과 배경색 가져오기
-                        font_color_value = span.get('color', 0)
-                        bg_color_value = span.get('bgcolor', 1)
-                        font_color = get_rgb_color(font_color_value)
-                        bg_color = get_rgb_color(bg_color_value)
-                        # 기본 색상인지 확인
-                        is_default_font_color = is_default_color(font_color, [DEFAULT_FONT_COLOR])
-                        is_default_bg_color = is_default_color(bg_color, DEFAULT_BG_COLORS)
-                        if not is_default_font_color or not is_default_bg_color:
-                            return True  # 변경사항이 있는 셀
+    # 셀 영역을 이미지로 추출
+    pix = page.get_pixmap(clip=cell_rect, colorspace=fitz.csRGB)
+    img_data = pix.tobytes("png")
+    img = Image.open(io.BytesIO(img_data))
+    # 이미지에서 평균 색상 계산
+    img_array = np.array(img)
+    # 투명도 채널 제거 (RGBA인 경우)
+    if img_array.shape[2] == 4:
+        img_array = img_array[:, :, :3]
+    avg_color = tuple(img_array.reshape(-1, 3).mean(axis=0).astype(int))
+    # 디버깅 모드일 때 색상 정보 출력
+    if DEBUG_MODE:
+        print(f"셀 위치: {cell_rect}, 평균 배경색: {avg_color}")
+    # 기본 배경색과의 색상 차이 계산
+    diff = color_difference(avg_color, DEFAULT_BG_COLOR)
+    if diff > COLOR_TOLERANCE:
+        return True  # 변경사항이 있는 셀
     return False  # 변경사항이 없는 셀
 
 # 페이지에서 타겟 표를 추출하는 함수
@@ -225,10 +199,16 @@ def save_revisions_to_excel(df, output_excel_path):
     workbook.save(output_excel_path)
     print(f"개정된 부분이 '{output_excel_path}'에 저장되었습니다.")
 
+
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_excel_path = "/workspaces/automation/output/extracted_tables.xlsx"
     main(pdf_path, output_excel_path)
+
+
+
+
+
 
 
 
