@@ -215,20 +215,3 @@ if __name__ == "__main__":
     main(pdf_path, output_excel_path)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
