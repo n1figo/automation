@@ -5,8 +5,6 @@ import cv2
 import os
 import re
 from PIL import Image
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 # 디버깅 모드 설정
 DEBUG_MODE = True
@@ -31,7 +29,7 @@ def remove_illegal_characters(text):
 def clean_text_for_excel(text: str) -> str:
     if isinstance(text, str):
         text = remove_illegal_characters(text)
-        return text
+        return text  # 줄바꿈을 제거하지 않음
     return text
 
 def pdf_to_image(page):
@@ -41,21 +39,26 @@ def pdf_to_image(page):
 
 def detect_highlights(image, page_num):
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    s = hsv[:,:,1]
+    v = hsv[:,:,2]
     
-    # 노란색 범위 설정 (이 값은 조정이 필요할 수 있습니다)
-    lower_yellow = np.array([20, 100, 100])
-    upper_yellow = np.array([30, 255, 255])
+    saturation_threshold = 30
+    saturation_mask = s > saturation_threshold
     
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
     
     kernel = np.ones((5,5), np.uint8)
-    cleaned_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
     
+    # 디버깅: 마스크 이미지 저장
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
     
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
+    # 디버깅: 윤곽선이 그려진 이미지 저장
     contour_image = image.copy()
     cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
@@ -66,10 +69,25 @@ def get_capture_regions(contours, image_height, image_width):
     if not contours:
         return []
 
+    capture_height = image_height // 3
+    sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
+    
     regions = []
-    for contour in contours:
+    current_region = None
+    
+    for contour in sorted_contours:
         x, y, w, h = cv2.boundingRect(contour)
-        regions.append((x, y, x+w, y+h))
+        
+        if current_region is None:
+            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
+        elif y - current_region[1] < capture_height//2:
+            current_region[1] = min(image_height, y + h + capture_height//2)
+        else:
+            regions.append(current_region)
+            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
+    
+    if current_region:
+        regions.append(current_region)
     
     return regions
 
@@ -81,9 +99,10 @@ def extract_target_tables_from_page(page, image, page_number):
     contours = detect_highlights(image, page_number + 1)
     highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
     
+    # 디버깅: 강조 영역이 표시된 이미지 저장
     debug_image = image.copy()
-    for x1, y1, x2, y2 in highlight_regions:
-        cv2.rectangle(debug_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+    for start_y, end_y in highlight_regions:
+        cv2.rectangle(debug_image, (0, start_y), (image.shape[1], end_y), (255, 0, 0), 2)
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlights.png'), cv2.cvtColor(debug_image, cv2.COLOR_RGB2BGR))
     
     table_data = []
@@ -94,28 +113,38 @@ def extract_target_tables_from_page(page, image, page_number):
             continue
         
         header_row = table_content[0]
-        header_texts = [clean_text_for_excel(str(cell).strip()) if cell is not None else '' for cell in header_row]
+        header_texts = [clean_text_for_excel(cell.strip()) if cell else '' for cell in header_row]
         header_texts_normalized = [text.replace(" ", "").replace("\n", "") for text in header_texts]
         
         if all(any(target_header == header_cell for header_cell in header_texts_normalized) for target_header in TARGET_HEADERS):
-            for row_index, row in enumerate(table_content[1:], start=1):
+            num_rows = len(table_content)
+            num_cols = len(header_texts)
+            for row_index in range(1, num_rows):
+                row = table_content[row_index]
                 row_data = {}
                 change_detected = False
                 
-                for col_index, header in enumerate(header_texts):
-                    cell_value = row[col_index] if col_index < len(row) else None
-                    cell_text = clean_text_for_excel(str(cell_value).strip()) if cell_value is not None else ''
-                    header_normalized = header.replace(" ", "").replace("\n", "")
-                    if header_normalized in TARGET_HEADERS:
+                for col_index in range(num_cols):
+                    header = header_texts[col_index].replace(" ", "").replace("\n", "")
+                    cell_text = clean_text_for_excel(row[col_index].strip()) if row[col_index] else ''
+                    if header in TARGET_HEADERS:
                         cell_texts = cell_text.split('\n')
-                        if header_normalized == '보장명':
-                            row_data['보장명1'] = cell_texts[0] if cell_texts else ''
-                            row_data['보장명2'] = cell_texts[1] if len(cell_texts) > 1 else ''
-                        elif header_normalized == '지급사유':
-                            row_data['지급사유1'] = cell_texts[0] if cell_texts else ''
-                            row_data['지급사유2'] = cell_texts[1] if len(cell_texts) > 1 else ''
-                        elif header_normalized == '지급금액':
-                            row_data['지급금액'] = cell_text
+                        if header == '보장명':
+                            if len(cell_texts) > 1:
+                                row_data['보장명1'] = cell_texts[0]
+                                row_data['보장명2'] = cell_texts[1]
+                            else:
+                                row_data['보장명1'] = cell_text
+                                row_data['보장명2'] = ''
+                        elif header == '지급사유':
+                            if len(cell_texts) > 1:
+                                row_data['지급사유1'] = cell_texts[0]
+                                row_data['지급사유2'] = cell_texts[1]
+                            else:
+                                row_data['지급사유1'] = cell_text
+                                row_data['지급사유2'] = ''
+                        else:
+                            row_data[header] = cell_text
                 
                 # 강조 영역 확인
                 if len(table.cells) > row_index and len(table.cells[row_index]) > 0:
@@ -123,9 +152,9 @@ def extract_target_tables_from_page(page, image, page_number):
                     if isinstance(cell, (tuple, list)) and len(cell) > 2:
                         cell_rect = cell[2]
                         if isinstance(cell_rect, fitz.Rect):
-                            for x1, y1, x2, y2 in highlight_regions:
-                                if (x1 <= cell_rect.x0 <= x2 and y1 <= cell_rect.y0 <= y2) or \
-                                   (x1 <= cell_rect.x1 <= x2 and y1 <= cell_rect.y1 <= y2):
+                            cell_y = cell_rect.y1
+                            for start_y, end_y in highlight_regions:
+                                if start_y <= cell_y <= end_y:
                                     change_detected = True
                                     break
                 
@@ -136,84 +165,35 @@ def extract_target_tables_from_page(page, image, page_number):
     
     return table_data
 
-
-import fitz  # PyMuPDF
-import pandas as pd
-import numpy as np
-import cv2
-import os
-import re
-from PIL import Image
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-# 이전 코드는 그대로 유지...
-
-def compare_and_update_excel(excel_path, table_data):
-    try:
-        df = pd.read_excel(excel_path)
-        
-        # NaN 값을 빈 문자열로 대체
-        df = df.fillna('')
-        
-        vectorizer = TfidfVectorizer()
-        df_text = df['보장명1'].astype(str) + ' ' + df['보장명2'].astype(str) + ' ' + \
-                  df['지급사유1'].astype(str) + ' ' + df['지급사유2'].astype(str) + ' ' + \
-                  df['지급금액'].astype(str)
-        
-        # 빈 문자열 확인 및 처리
-        if df_text.str.strip().empty.all():
-            print("경고: 모든 텍스트 데이터가 비어 있습니다.")
-            return
-        
-        df_vectors = vectorizer.fit_transform(df_text)
-        
-        for row in table_data:
-            row_text = (str(row.get('보장명1', '')) + ' ' + str(row.get('보장명2', '')) + ' ' + 
-                        str(row.get('지급사유1', '')) + ' ' + str(row.get('지급사유2', '')) + ' ' + 
-                        str(row.get('지급금액', '')))
-            
-            if row_text.strip():  # 빈 문자열이 아닌 경우에만 처리
-                row_vector = vectorizer.transform([row_text])
-                similarities = cosine_similarity(row_vector, df_vectors)[0]
-                max_similarity_index = similarities.argmax()
-                
-                if similarities[max_similarity_index] > 0.8:  # 유사도 임계값
-                    df.at[max_similarity_index, '변경사항'] = row['변경사항']
-            else:
-                print(f"경고: 빈 텍스트 데이터 무시됨 - {row}")
-        
-        df.to_excel(excel_path, index=False)
-        print(f"엑셀 파일이 업데이트되었습니다: {excel_path}")
-    except Exception as e:
-        print(f"엑셀 파일 처리 중 오류 발생: {str(e)}")
-
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
     doc = fitz.open(pdf_path)
     
+    # 51페이지만 처리 (0-based index이므로 50)
     page_number = 50
     page = doc[page_number]
     image = pdf_to_image(page)
     
+    # 원본 이미지 저장
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_original.png'), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
     
+    # 페이지에서 표 추출 및 강조 영역 분석
     table_data = extract_target_tables_from_page(page, image, page_number)
     
     if table_data:
         df = pd.DataFrame(table_data)
-        for col in ["보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액"]:
+        for col in ["보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "변경사항"]:
             if col not in df.columns:
                 df[col] = ''
         df = df[["페이지", "보장명1", "보장명2", "지급사유1", "지급사유2", "지급금액", "변경사항"]]
-        df.to_excel(output_excel_path, index=False)
-        print(f"초기 엑셀 파일이 저장되었습니다: {output_excel_path}")
-        
-        compare_and_update_excel(output_excel_path, table_data)
-        
+        save_revisions_to_excel(df, output_excel_path)
         print("작업이 완료되었습니다.")
     else:
         print("지정된 헤더를 가진 표를 찾을 수 없습니다.")
+
+def save_revisions_to_excel(df, output_excel_path):
+    df.to_excel(output_excel_path, index=False)
+    print(f"개정된 부분이 '{output_excel_path}'에 저장되었습니다.")
 
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
