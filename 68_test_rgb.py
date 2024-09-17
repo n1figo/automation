@@ -5,6 +5,7 @@ from PIL import Image
 import numpy as np
 import re
 import os
+from collections import Counter
 
 # 디버깅 모드 설정
 DEBUG_MODE = True
@@ -15,7 +16,13 @@ TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
 # 특정 색상 범위 (흰색, 검정색, 회색을 제외하는 범위)
 WHITE_COLOR = (255, 255, 255)
 BLACK_COLOR = (0, 0, 0)
-GRAY_COLOR = (127, 127, 127)
+GRAY_COLOR = (200, 200, 200)  # 회색 범위를 넓힘
+
+# 강조 색상 정의 (살색과 주황색)
+HIGHLIGHT_COLORS = {
+    "살색": (255, 218, 185),
+    "주황색": (255, 165, 0)
+}
 
 # 허용되지 않는 문자를 제거하는 함수
 def remove_illegal_characters(text):
@@ -39,46 +46,36 @@ def clean_text_for_excel(text: str) -> str:
 def is_similar_color(c1, c2, tolerance=30):
     return all(abs(c1[i] - c2[i]) <= tolerance for i in range(3))
 
-# 페이지 전체에서 흰색, 검정색, 회색이 아닌 색상을 감지
-def detect_emphasized_color_on_page(page_image):
-    img_array = np.array(page_image)
+# 강조 색상 감지 함수
+def detect_highlight_color(color):
+    for name, highlight_color in HIGHLIGHT_COLORS.items():
+        if is_similar_color(color, highlight_color, tolerance=50):
+            return True, name
+    return False, None
+
+# 이미지에서 가장 빈번한 강조 색상 감지 함수
+def detect_most_common_highlight_color(image):
+    img_array = np.array(image)
     height, width, _ = img_array.shape
     
-    detected_colors = set()
-    
+    highlight_colors = []
     for y in range(height):
         for x in range(width):
             pixel_color = tuple(img_array[y, x])
-            
-            # 흰색, 검정색, 회색이 아닌 색상 감지
-            if not (is_similar_color(pixel_color, WHITE_COLOR) or
-                    is_similar_color(pixel_color, BLACK_COLOR) or
-                    is_similar_color(pixel_color, GRAY_COLOR)):
-                detected_colors.add(pixel_color)
+            is_highlight, color_name = detect_highlight_color(pixel_color)
+            if is_highlight:
+                highlight_colors.append(color_name)
     
-    if detected_colors:
-        return True, detected_colors
-    return False, detected_colors
-
-# 셀의 배경색을 추출하는 함수
-def get_cell_background_color(cell_image):
-    if cell_image.mode != 'RGB':
-        cell_image = cell_image.convert('RGB')
-    img_array = np.array(cell_image)
+    if not highlight_colors:
+        return False, None
     
-    # 이미지에서 주요 색상 추출
-    pixels = img_array.reshape(-1, 3)
-    if len(pixels) == 0:
-        return None
-    counts = {}
-    for pixel in pixels:
-        key = tuple(pixel)
-        counts[key] = counts.get(key, 0) + 1
-    dominant_color = max(counts, key=counts.get)
-    return dominant_color
+    color_counts = Counter(highlight_colors)
+    most_common_color = color_counts.most_common(1)[0][0]
+    
+    return True, most_common_color
 
 # 페이지에서 타겟 표를 추출하는 함수
-def extract_target_tables_from_page(page, page_image, page_number, emphasized_colors):
+def extract_target_tables_from_page(page, page_image, page_number):
     print(f"페이지 {page_number + 1} 처리 중...")
     tables = page.find_tables()
     print(f"페이지 {page_number + 1}에서 찾은 테이블 수: {len(tables.tables)}")
@@ -149,20 +146,16 @@ def extract_target_tables_from_page(page, page_image, page_number, emphasized_co
                             x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
                             cell_image = page_image.crop((x0, y0, x1, y1))
                             
-                            bg_color = get_cell_background_color(cell_image)
-                            cell_bg_color = bg_color
-                            
-                            print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index}) 배경색: {bg_color}")
-                            
-                            # 페이지 전체에서 강조 색상이 발견된 경우
-                            if bg_color in emphasized_colors:
+                            color_detected, color_name = detect_most_common_highlight_color(cell_image)
+                            if color_detected:
                                 change_detected = True
-                                print(f"강조 색상 감지: 페이지 {page_number + 1}, 셀 ({row_index}, {col_index})")
+                                cell_bg_color = color_name
+                                print(f"페이지 {page_number + 1}, 셀 ({row_index}, {col_index})에서 강조색 감지: {color_name}")
                 
                 if row_data:
                     row_data["페이지"] = page_number + 1
                     row_data["변경사항"] = "추가" if change_detected else "유지"
-                    row_data["배경색"] = str(cell_bg_color) if cell_bg_color else ''
+                    row_data["배경색"] = cell_bg_color if cell_bg_color else ''
                     table_data.append(row_data)
     return table_data
 
@@ -177,15 +170,8 @@ def main(pdf_path, output_excel_path):
     images = convert_from_path(pdf_path, first_page=page_number+1, last_page=page_number+1, dpi=200, fmt='png')
     page_image = images[0]
     
-    # 페이지에서 강조 색상을 먼저 감지
-    color_detected, emphasized_colors = detect_emphasized_color_on_page(page_image)
-    if color_detected:
-        print(f"페이지 {page_number + 1}에서 강조 색상 발견: {emphasized_colors}")
-    else:
-        print(f"페이지 {page_number + 1}에서 강조 색상이 발견되지 않았습니다.")
-    
     # 페이지에서 표 추출 및 셀 배경색 분석
-    table_data = extract_target_tables_from_page(page, page_image, page_number, emphasized_colors)
+    table_data = extract_target_tables_from_page(page, page_image, page_number)
     
     if table_data:
         df = pd.DataFrame(table_data)

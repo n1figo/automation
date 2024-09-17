@@ -96,7 +96,7 @@ def process_pdf(pdf_path, output_folder):
             print(f"Captured highlighted region {i + 1} on page {page_num + 1}, saved as {output_path}")
 
 # 실행 파라미터
-pdf_path = "/workspaces/automation/uploads/5. ㅇKB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
 output_folder = "/workspaces/automation/highlight_images"
 
 # 메인 실행
