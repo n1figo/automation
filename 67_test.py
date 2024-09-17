@@ -5,6 +5,10 @@ import cv2
 import os
 import re
 from PIL import Image
+import pytesseract
+from difflib import SequenceMatcher
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # 디버깅 모드 설정
 DEBUG_MODE = True
@@ -15,6 +19,9 @@ TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
 # 이미지 저장 경로 설정
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+
+# 문장 임베딩 모델 로드
+model = SentenceTransformer('sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens')
 
 def remove_illegal_characters(text):
     ILLEGAL_CHARACTERS_RE = re.compile(
@@ -66,30 +73,27 @@ def detect_highlights(image, page_num):
     return contours
 
 def get_capture_regions(contours, image_height, image_width):
-    if not contours:
-        return []
-
-    capture_height = image_height // 3
-    sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
-    
     regions = []
-    current_region = None
-    
-    for contour in sorted_contours:
+    for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        
-        if current_region is None:
-            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-        elif y - current_region[1] < capture_height//2:
-            current_region[1] = min(image_height, y + h + capture_height//2)
-        else:
-            regions.append(current_region)
-            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-    
-    if current_region:
-        regions.append(current_region)
-    
+        regions.append((y, y + h))
     return regions
+
+def extract_text_from_image(image, x, y, w, h):
+    cell_image = image[y:y+h, x:x+w]
+    text = pytesseract.image_to_string(cell_image, lang='kor+eng')
+    return text.strip()
+
+def text_similarity(text1, text2):
+    # 시퀀스 매칭 유사도
+    seq_similarity = SequenceMatcher(None, text1, text2).ratio()
+    
+    # 임베딩 기반 코사인 유사도
+    embeddings = model.encode([text1, text2])
+    cos_similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+    
+    # 두 유사도의 평균
+    return (seq_similarity + cos_similarity) / 2
 
 def extract_target_tables_from_page(page, image, page_number):
     print(f"페이지 {page_number + 1} 처리 중...")
@@ -124,10 +128,32 @@ def extract_target_tables_from_page(page, image, page_number):
                 row_data = {}
                 change_detected = False
                 
+                if len(table.cells) > row_index and len(table.cells[row_index]) > 0:
+                    cell = table.cells[row_index][0]
+                    if isinstance(cell, (tuple, list)) and len(cell) > 2:
+                        cell_rect = cell[2]
+                        if isinstance(cell_rect, fitz.Rect):
+                            cell_y = cell_rect.y1
+                            for start_y, end_y in highlight_regions:
+                                if start_y <= cell_y <= end_y:
+                                    change_detected = True
+                                    break
+                
                 for col_index in range(num_cols):
                     header = header_texts[col_index].replace(" ", "").replace("\n", "")
-                    cell_text = clean_text_for_excel(row[col_index].strip()) if row[col_index] else ''
                     if header in TARGET_HEADERS:
+                        cell_rect = table.cells[row_index][col_index][2]
+                        original_text = clean_text_for_excel(row[col_index].strip()) if row[col_index] else ''
+                        ocr_text = extract_text_from_image(image, int(cell_rect.x0), int(cell_rect.y0), 
+                                                           int(cell_rect.width), int(cell_rect.height))
+                        
+                        similarity = text_similarity(original_text, ocr_text)
+                        if similarity < 0.8:  # 유사도 임계값
+                            change_detected = True
+                            cell_text = ocr_text
+                        else:
+                            cell_text = original_text
+                        
                         cell_texts = cell_text.split('\n')
                         if header == '보장명':
                             if len(cell_texts) > 1:
@@ -145,18 +171,6 @@ def extract_target_tables_from_page(page, image, page_number):
                                 row_data['지급사유2'] = ''
                         else:
                             row_data[header] = cell_text
-                
-                # 강조 영역 확인
-                if len(table.cells) > row_index and len(table.cells[row_index]) > 0:
-                    cell = table.cells[row_index][0]
-                    if isinstance(cell, (tuple, list)) and len(cell) > 2:
-                        cell_rect = cell[2]
-                        if isinstance(cell_rect, fitz.Rect):
-                            cell_y = cell_rect.y1
-                            for start_y, end_y in highlight_regions:
-                                if start_y <= cell_y <= end_y:
-                                    change_detected = True
-                                    break
                 
                 if row_data:
                     row_data["페이지"] = page_number + 1
