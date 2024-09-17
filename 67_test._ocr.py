@@ -108,18 +108,27 @@ def extract_text_from_region(image, region, reader):
     
     # 이미지 전처리
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Adaptive Thresholding 적용 (조명 조건에 따라 유연하게 대응)
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY, 31, 2)
+    # 노이즈 제거
     denoised = cv2.medianBlur(thresh, 3)
     
     # 이미지 크기 확대 (예: 150%)
-    scale_percent = 150  # 원하는 비율로 조정
+    scale_percent = 150  # 필요에 따라 조정
     width = int(denoised.shape[1] * scale_percent / 100)
     height = int(denoised.shape[0] * scale_percent / 100)
     dim = (width, height)
     resized = cv2.resize(denoised, dim, interpolation=cv2.INTER_LINEAR)
     
-    # EasyOCR으로 OCR 수행
-    result = reader.readtext(resized, detail=0, paragraph=False)
+    # OCR 수행 (이미지 객체 직접 전달)
+    try:
+        result = reader.readtext(resized, detail=0, paragraph=False)
+        if DEBUG_MODE:
+            print(f"EasyOCR OCR 결과: {result}")
+    except Exception as e:
+        print(f"OCR 수행 중 오류 발생: {e}")
+        return ""
     
     # 추출된 텍스트 결합
     extracted_text = ' '.join(result).strip()
@@ -150,7 +159,8 @@ def verify_easyocr(reader):
     
     # 이미지 전처리
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY, 31, 2)
     denoised = cv2.medianBlur(thresh, 3)
     scale_percent = 150
     width = int(denoised.shape[1] * scale_percent / 100)
