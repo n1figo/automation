@@ -22,12 +22,19 @@ def clean_text_for_excel(text: str) -> str:
         return text  # 줄바꿈을 제거하지 않음
     return text
 
-# 색상 체크 함수
-def check_text_color(span) -> bool:
+# 텍스트 색상 및 배경색 체크 함수
+def check_text_color_and_background(span) -> bool:
     # 흰색, 검정색, 회색 제외한 텍스트 색상 필터링
     common_colors = {(1, 1, 1), (0, 0, 0), (0.5, 0.5, 0.5)}  # RGB 값
     color = span.get('color', None)
-    return color and color not in common_colors
+    background_color = span.get('bgcolor', None)  # 배경색 확인 (bgcolor)
+
+    # 텍스트 색상 또는 배경색이 특정 색상(예: 살색 음영)을 감지하도록 추가
+    if color and color not in common_colors:
+        return True
+    if background_color and background_color not in common_colors:
+        return True
+    return False
 
 # 텍스트 및 색상 추출 함수
 def extract_text_and_colors(page: fitz.Page) -> List[Tuple[str, str]]:
@@ -39,7 +46,7 @@ def extract_text_and_colors(page: fitz.Page) -> List[Tuple[str, str]]:
             for line in block['lines']:
                 for span in line['spans']:
                     text = clean_text_for_excel(span['text'])
-                    if check_text_color(span):
+                    if check_text_color_and_background(span):  # 배경색도 체크
                         extracted_text.append((text, "추가"))
                     else:
                         extracted_text.append((text, "유지"))

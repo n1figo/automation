@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 # 텍스트를 개별 보장 항목으로 분리
 def split_coverage_items(text: str) -> List[str]:
+    if not isinstance(text, str):
+        return [str(text)]  # None 또는 다른 타입의 값을 문자열로 변환
     items = re.findall(r'[가-힣a-zA-Z0-9]+\([^)]+\)(?:\【[^】]+\】)?', text)
     return items if items else [text]
 
@@ -126,7 +128,7 @@ class ExcelWriterWithChanges:
             for r in dataframe_to_rows(df, index=False, header=True):
                 for col_num, cell_value in enumerate(r, start=1):
                     cell = self.sheet.cell(row=row, column=col_num)
-                    cell.value = cell_value
+                    cell.value = str(cell_value) if cell_value is not None else ''
                     cell.alignment = Alignment(wrap_text=True, vertical='top')
                     if "추가" in str(cell_value):
                         cell.fill = yellow_fill
