@@ -1,300 +1,160 @@
-import asyncio
-from playwright.async_api import async_playwright
+import fitz  # PyMuPDF
 import pandas as pd
-import os
-from PIL import Image
-import numpy as np
 from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
-from bs4 import BeautifulSoup
-from io import StringIO
-import pdfplumber
+import logging
+import os
+from typing import List, Tuple, Any
+from collections import defaultdict
+import re
 
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-async def get_full_html_and_tables(url, output_dir):
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
-            
-            # '보장내용' 탭 클릭
-            await page.click('text="보장내용"')
-            await page.wait_for_load_state('networkidle')
-            
-            # JavaScript 실행 후 페이지 내용 가져오기
-            html_content = await page.content()
-            
-            # 테이블 데이터 추출
-            tables = await page.evaluate('''
-                () => {
-                    const tables = document.querySelectorAll('.tab_cont[data-list="보장내용"] table');
-                    return Array.from(tables).map(table => {
-                        const rows = table.querySelectorAll('tr');
-                        return Array.from(rows).map(row => {
-                            const cells = row.querySelectorAll('th, td');
-                            return Array.from(cells).map(cell => cell.innerText);
-                        });
-                    });
-                }
-            ''')
-            
-            # 전체 페이지 스크린샷 캡처
-            await page.screenshot(path=os.path.join(output_dir, "full_page.png"), full_page=True)
-            
-            # 테이블 영역 스크린샷 캡처
-            table_elements = await page.query_selector_all('.tab_cont[data-list="보장내용"] table')
-            for i, table_element in enumerate(table_elements):
-                try:
-                    await table_element.scroll_into_view_if_needed()
-                    await page.wait_for_timeout(1000)
-                    await table_element.screenshot(path=os.path.join(output_dir, f"table_{i+1}.png"))
-                except Exception as e:
-                    print(f"Failed to capture screenshot for table {i+1}: {str(e)}")
-            
-            await browser.close()
-        
-        html_file_path = os.path.join(output_dir, "source.txt")
-        with open(html_file_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        print(f"Full HTML source and table screenshots have been saved to {output_dir}")
-        return html_file_path, tables
-    except Exception as e:
-        print(f"Error in get_full_html_and_tables: {str(e)}")
-        return None, []
+# 텍스트를 엑셀에 맞게 정리
+def clean_text_for_excel(text: str) -> str:
+    if isinstance(text, str):
+        # 제어 문자 제거
+        text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+        # 줄바꿈을 공백으로 변경
+        text = text.replace('\n', ' ').replace('\r', '')
+        # 연속된 공백을 하나의 공백으로 변경
+        text = re.sub(r'\s+', ' ', text)
+        # 특수 문자 제거 또는 변경
+        text = text.replace('•', '-').replace('Ⅱ', 'II')
+    return text
 
-def process_tables(tables):
-    all_data = []
-    for i, table in enumerate(tables):
-        df = pd.DataFrame(table[1:], columns=table[0])
-        df['table_info'] = f'Table_{i+1}'
-        all_data.append(df)
+# 색상 체크 함수
+def check_text_color(span) -> bool:
+    # 흰색, 검정색, 회색 제외한 텍스트 색상 필터링
+    common_colors = {(1, 1, 1), (0, 0, 0), (0.5, 0.5, 0.5)}  # RGB 값
+    color = span.get('color', None)
+    return color and color not in common_colors
+
+# 텍스트 및 색상 추출 함수
+def extract_text_and_colors(page: fitz.Page) -> List[Tuple[str, str]]:
+    blocks = page.get_text("dict")["blocks"]
+    extracted_text = []
+
+    for block in blocks:
+        if 'lines' in block:
+            for line in block['lines']:
+                for span in line['spans']:
+                    text = clean_text_for_excel(span['text'])
+                    if check_text_color(span):
+                        extracted_text.append((text, "추가"))
+                    else:
+                        extracted_text.append((text, "유지"))
     
-    if not all_data:
-        print("No data extracted.")
-        return pd.DataFrame()
-    
-    result = pd.concat(all_data, axis=0, ignore_index=True)
-    
-    print("Final DataFrame:")
-    print(f"Columns: {result.columns.tolist()}")
-    print(f"Shape: {result.shape}")
-    
-    return result
+    return extracted_text
 
-def save_original_tables_to_excel(dfs, output_excel_path):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Original Tables"
-
-    row = 1
-    for i, df in enumerate(dfs, start=1):
-        ws.cell(row=row, column=1, value=f'Table_{i}')
-        row += 1
-
-        for col, header in enumerate(df.columns, start=1):
-            ws.cell(row=row, column=col, value=header)
-        row += 1
-
-        for _, data_row in df.iterrows():
-            for col, value in enumerate(data_row, start=1):
-                ws.cell(row=row, column=col, value=value)
-            row += 1
-
-        row += 2
-
-    wb.save(output_excel_path)
-    print(f"Original tables have been saved to {output_excel_path}")
-
-def is_color_text(color):
-    r, g, b = color
-    is_black_or_dark = max(r, g, b) < 50  # 약간 어두운 색상도 제외
-    is_white = r > 240 and g > 240 and b > 240  # 흰색에 가까운 색상
-    is_gray = abs(r - g) < 10 and abs(g - b) < 10 and abs(r - b) < 10  # 회색 (RGB 값의 차이가 10 이하)
-    return not (is_black_or_dark or is_white or is_gray)
-
-def detect_colored_text(image):
-    width, height = image.size
-    img_array = np.array(image)
-    
-    colored_pixels = []
-    for y in range(height):
-        for x in range(width):
-            color = img_array[y, x]
-            if is_color_text(color):
-                colored_pixels.append((x, y))
-    
-    # 색깔 있는 픽셀들의 클러스터를 찾아 의미 있는 텍스트 영역만 반환
-    if colored_pixels:
-        x_coords, y_coords = zip(*colored_pixels)
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-        return [(min_x, min_y, max_x, max_y)]
-    return []
-
-def extract_highlighted_text_and_tables(pdf_path, output_dir):
-    print("Starting extraction of colored text and tables from PDF...")
-    with pdfplumber.open(pdf_path) as pdf:
-        total_pages = len(pdf.pages)
-        texts_with_context = []
-        colored_pages = set()
+# PDF 테이블 추출 클래스
+class PDFTableExtractor:
+    def __init__(self, pdf_path: str, tessdata_dir: str = None):
+        self.pdf_path = pdf_path
+        self.doc = fitz.open(pdf_path)
+        if tessdata_dir:
+            os.environ['TESSDATA_PREFIX'] = tessdata_dir
         
-        output_image_dir = os.path.join(output_dir, "images")
-        os.makedirs(output_image_dir, exist_ok=True)
+    def extract_tables_with_titles(self) -> List[Tuple[str, pd.DataFrame]]:
+        all_tables = []
+        for page_num in range(len(self.doc)):
+            page = self.doc[page_num]
+            tables = self.extract_tables_from_page(page)
+            titled_tables = self._assign_titles_to_tables(page, tables)
+            all_tables.extend(titled_tables)
+        return self._merge_tables_with_same_title(all_tables)
+    
+    def extract_tables_from_page(self, page: fitz.Page) -> List[Any]:
+        tables = page.find_tables()
+        return tables
+    
+    def _assign_titles_to_tables(self, page: fitz.Page, tables: List[Any]) -> List[Tuple[str, pd.DataFrame]]:
+        titled_tables = []
+        for table in tables:
+            title = self._find_table_title(page, table)
+            df = self._table_to_dataframe(table)
+            titled_tables.append((title, df))
+        return titled_tables
+    
+    def _find_table_title(self, page: fitz.Page, table: Any) -> str:
+        blocks = page.get_text("dict")["blocks"]
+        table_top = table.bbox[1]  # y0 좌표
+        potential_titles = []
+        for b in blocks:
+            if 'lines' in b:
+                for l in b['lines']:
+                    for s in l['spans']:
+                        if s['bbox'][3] < table_top and s['bbox'][3] > table_top - 50:
+                            potential_titles.append(s['text'])
         
-        for page_num, page in enumerate(pdf.pages):
-            print(f"Processing page {page_num + 1}/{total_pages}")
-            
-            img = page.to_image()
-            pil_image = img.original
-            
-            colored_regions = detect_colored_text(pil_image)
-            
-            if colored_regions:
-                colored_pages.add(page_num + 1)
-                
-                image_filename = f"page_{page_num + 1}_full.png"
-                image_path = os.path.join(output_image_dir, image_filename)
-                pil_image.save(image_path)
-                
-                # 색깔 있는 텍스트 영역만 추출
-                text = ""
-                for region in colored_regions:
-                    text += page.crop(region).extract_text()
-                
-                texts_with_context.append((text, page_num + 1, image_path, '색상 텍스트 감지', colored_regions))
-            else:
-                texts_with_context.append(("", page_num + 1, None, '유지', []))
+        if potential_titles:
+            return " ".join(potential_titles).strip()
+        return "Untitled Table"
+    
+    def _table_to_dataframe(self, table: Any) -> pd.DataFrame:
+        df = pd.DataFrame(table.extract())
+        df = df.applymap(clean_text_for_excel)
+        return df
+    
+    def _merge_tables_with_same_title(self, tables: List[Tuple[str, pd.DataFrame]]) -> List[Tuple[str, pd.DataFrame]]:
+        merged_tables = defaultdict(list)
+        for title, df in tables:
+            merged_tables[title].append(df)
         
-        # 색상 텍스트가 있는 페이지의 표 추출
-        table_data = {}
-        for page_num in colored_pages:
-            page = pdf.pages[page_num - 1]
-            tables = page.extract_tables()
-            if tables:
-                for i, table in enumerate(tables):
-                    df = pd.DataFrame(table[1:], columns=table[0])
-                    sheet_name = f"Page_{page_num}_Table_{i+1}"
-                    table_data[sheet_name] = df
+        return [(title, pd.concat(dfs, ignore_index=True)) for title, dfs in merged_tables.items()]
+
+# 엑셀 작성 및 변경사항 적용 클래스
+class ExcelWriterWithChanges:
+    def __init__(self, output_path: str):
+        self.output_path = output_path
+        self.workbook = Workbook()
+        self.sheet = self.workbook.active
+        self.sheet.title = "Extracted Tables"
         
-        if table_data:
-            tables_excel_path = os.path.join(output_dir, "colored_text_tables.xlsx")
-            with pd.ExcelWriter(tables_excel_path, engine='openpyxl') as writer:
-                for sheet_name, df in table_data.items():
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-            print(f"Saved all tables from pages with colored text to {tables_excel_path}")
-
-    print(f"Finished extracting text and tables from PDF (total {total_pages} pages)")
-    return texts_with_context
-
-def compare_dataframes(df_before, texts_with_context, output_dir):
-    print("Starting comparison of dataframes...")
-    df_result = df_before.copy() if not df_before.empty else pd.DataFrame(columns=['table_info'])
-    df_result['PDF_페이지'] = ''
-    df_result['이미지_경로'] = ''
-    df_result['상태'] = '유지'
-
-    for text, page_num, image_path, status, colored_regions in texts_with_context:
-        if text.strip():  # 색깔 있는 텍스트가 있는 경우에만 처리
-            for i in range(len(df_result)):
-                if any(str(cell).strip() in text for cell in df_result.iloc[i]):
-                    table_start = i
-                    while table_start > 0 and df_result.loc[table_start-1, 'table_info'] == df_result.loc[i, 'table_info']:
-                        table_start -= 1
-                    table_end = i
-                    while table_end < len(df_result)-1 and df_result.loc[table_end+1, 'table_info'] == df_result.loc[i, 'table_info']:
-                        table_end += 1
-                    
-                    df_result.loc[table_start:table_end, 'PDF_페이지'] = page_num
-                    df_result.loc[table_start:table_end, '이미지_경로'] = image_path
-                    df_result.loc[table_start:table_end, '상태'] = '색상 텍스트 감지'
-                    break
-
-    cols = df_result.columns.tolist()
-    cols.append(cols.pop(cols.index('상태')))
-    df_result = df_result[cols]
-
-    print(f"Finished comparison. Updated {len(df_result[df_result['상태'] != '유지'])} rows")
-    return df_result
-
-
-def save_to_excel(df, output_excel_path):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Comparison Results"
-
-    row = 1
-    if 'table_info' in df.columns:
-        for table_info in df['table_info'].unique():
-            table_df = df[df['table_info'] == table_info]
-            
-            ws.cell(row=row, column=1, value=table_info)
+    def write_tables_with_changes(self, tables: List[Tuple[str, pd.DataFrame]]):
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        row = 1
+        
+        for title, df in tables:
+            self.sheet.cell(row=row, column=1, value=clean_text_for_excel(title))
             row += 1
             
-            for col, header in enumerate(table_df.columns, start=1):
-                ws.cell(row=row, column=col, value=header)
-            row += 1
+            # "변경사항" 컬럼 추가
+            df["변경사항"] = df.apply(lambda row: "추가" if any(cell == "추가" for cell in row.values) else "유지", axis=1)
             
-            for _, data_row in table_df.iterrows():
-                for col, value in enumerate(data_row, start=1):
-                    ws.cell(row=row, column=col, value=value)
+            for r in dataframe_to_rows(df, index=False, header=True):
+                self.sheet.append([clean_text_for_excel(cell) for cell in r])
+                # "추가"가 있는 경우 행 전체 강조
+                if "추가" in r:
+                    for col_num in range(1, len(r) + 1):
+                        self.sheet.cell(row=row, column=col_num).fill = yellow_fill
                 row += 1
-            
             row += 2
-    else:
-        # 'table_info' 열이 없는 경우 전체 DataFrame을 그대로 저장
-        for col, header in enumerate(df.columns, start=1):
-            ws.cell(row=row, column=col, value=header)
-        row += 1
         
-        for _, data_row in df.iterrows():
-            for col, value in enumerate(data_row, start=1):
-                ws.cell(row=row, column=col, value=value)
-            row += 1
+        self.workbook.save(self.output_path)
+        logger.info(f"Tables saved with '변경사항' to {self.output_path}")
 
-    wb.save(output_excel_path)
-    print(f"Results have been saved to {output_excel_path}")
-
-
-async def main():
-    print("Program start")
+# 메인 함수
+def main(pdf_path: str, output_excel_path: str, tessdata_dir: str = None):
     try:
-        url = "https://www.kbinsure.co.kr/CG302290001.ec#"
-        pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
-        output_dir = "/workspaces/automation/output"
-        os.makedirs(output_dir, exist_ok=True)
-        output_excel_path = os.path.join(output_dir, "comparison_results.xlsx")
-        original_excel_path = os.path.join(output_dir, "변경전.xlsx")
-
-        html_file_path, tables = await get_full_html_and_tables(url, output_dir)
+        extractor = PDFTableExtractor(pdf_path, tessdata_dir)
         
-        df_before = pd.DataFrame()
-        if tables:
-            df_before = process_tables(tables)
-            save_original_tables_to_excel([df_before], original_excel_path)
-            print("Combined DataFrame:")
-            print(df_before.head())
-            print(f"Shape of combined DataFrame: {df_before.shape}")
-        else:
-            print("No tables extracted from the website. Proceeding with an empty DataFrame.")
-
-        texts_with_context = extract_highlighted_text_and_tables(pdf_path, output_dir)
-
-        if texts_with_context:
-            df_matching = compare_dataframes(df_before, texts_with_context, output_dir)
-            print("Columns in df_matching:", df_matching.columns)
-            save_to_excel(df_matching, output_excel_path)
-        else:
-            print("Failed to extract colored text from PDF. Please check the PDF file.")
-
+        # 테이블 추출 및 색상 감지
+        tables = extractor.extract_tables_with_titles()
+        
+        # Excel 작성 및 변경사항 적용
+        writer = ExcelWriterWithChanges(output_excel_path)
+        writer.write_tables_with_changes(tables)
+        
+        logger.info("Table extraction, writing, and text extraction with changes completed successfully.")
     except Exception as e:
-        print(f"Error occurred: {str(e)}")
-        print("Detailed error information:")
-        import traceback
-        print(traceback.format_exc())
-    
-    print("Program end")
+        logger.error(f"An error occurred: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    output_excel_path = "/workspaces/automation/output/extracted_tables.xlsx"
+    tessdata_dir = "/usr/share/tesseract-ocr/4.00/tessdata"  # Tesseract OCR 언어 데이터 파일이 있는 디렉토리
+    main(pdf_path, output_excel_path, tessdata_dir)
