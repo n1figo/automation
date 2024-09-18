@@ -1,11 +1,18 @@
+import os
 import fitz  # PyMuPDF
 import pandas as pd
 import numpy as np
 import cv2
-import os
 from PIL import Image
-from langchain_community.chat_models import ChatOllama
-from langchain.schema import HumanMessage
+from langchain_community.llms import HuggingFaceHub
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from dotenv import load_dotenv
+
+
+# Hugging Face API 토큰 설정
+load_dotenv()
+HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 
 # 디버깅 모드 설정
 DEBUG_MODE = True
@@ -17,16 +24,14 @@ TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
-# Ollama 모델 초기화
-model = ChatOllama(model="llava", base_url="https://example-ollama-api.com",
-                   temperature=0)
+# Hugging Face 모델 초기화
+llm = HuggingFaceHub(repo_id="google/flan-t5-base", model_kwargs={"temperature": 0.5, "max_length": 512})
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return np.array(img)
 
-# 하이라이트 영역 탐지
 def detect_highlights(image, page_num):
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
     s = hsv[:,:,1]
@@ -43,19 +48,16 @@ def detect_highlights(image, page_num):
     cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
 
-    # 디버깅: 마스크 이미지 저장
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
 
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 디버깅: 윤곽선이 그려진 이미지 저장
     contour_image = image.copy()
     cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
 
     return contours
 
-# 강조된 영역 반환
 def get_capture_regions(contours, image_height, image_width):
     if not contours:
         return []
@@ -87,18 +89,14 @@ def extract_text_from_region(page, region):
     return page.get_text("text", clip=(x0, y0, x1, y1))
 
 def compare_texts(text1, text2):
-    prompt = f"""
-    다음 두 텍스트를 비교하고 유사도를 0에서 1 사이의 숫자로 표현해주세요:
-
-    텍스트 1: {text1}
-    텍스트 2: {text2}
-
-    유사도 (0-1):
-    """
-    message = HumanMessage(content=prompt)
-    response = model.invoke([message])
+    prompt = PromptTemplate(
+        input_variables=["text1", "text2"],
+        template="Compare the following two texts and rate their similarity on a scale from 0 to 1:\nText 1: {text1}\nText 2: {text2}\nSimilarity (0-1):"
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    response = chain.run({"text1": text1, "text2": text2})
     try:
-        similarity = float(response.content.strip())
+        similarity = float(response.strip())
         return max(0, min(similarity, 1))  # 0과 1 사이의 값으로 제한
     except ValueError:
         return 0  # 숫자로 변환할 수 없는 경우 0 반환
@@ -141,30 +139,24 @@ def extract_and_process_tables(doc, page_number, highlight_regions):
 
     return pd.DataFrame(processed_data)
 
-# 엑셀로 저장
 def save_to_excel(df, output_path):
     df.to_excel(output_path, index=False)
     print(f"파일이 '{output_path}'에 저장되었습니다.")
 
-# 메인 함수
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
 
-    # PyMuPDF로 PDF 열기
     doc = fitz.open(pdf_path)
     page_number = 50  # 페이지 번호 설정 (여기서는 51페이지)
 
     page = doc[page_number]
     image = pdf_to_image(page)
 
-    # 원본 이미지 저장
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_original.png'), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
-    # 강조된 영역 탐지
     contours = detect_highlights(image, page_number + 1)
     highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
 
-    # 강조 영역이 표시된 이미지 저장
     highlighted_image = image.copy()
     for region in highlight_regions:
         cv2.rectangle(highlighted_image, (0, region[0]), (image.shape[1], region[1]), (0, 255, 0), 2)
@@ -173,13 +165,10 @@ def main(pdf_path, output_excel_path):
     print(f"감지된 강조 영역 수: {len(highlight_regions)}")
     print(f"강조 영역: {highlight_regions}")
 
-    # PyMuPDF를 사용하여 테이블 추출 및 처리
     processed_df = extract_and_process_tables(doc, page_number, highlight_regions)
 
-    # 처리된 데이터 출력
     print(processed_df)
 
-    # 엑셀로 저장
     save_to_excel(processed_df, output_excel_path)
 
     print(f"처리된 데이터가 {output_excel_path}에 저장되었습니다.")
