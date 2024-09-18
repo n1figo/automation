@@ -1,10 +1,4 @@
-# 기존 임포트 문을 주석 처리하고 새로운 임포트 문을 추가합니다
-# from langchain_huggingface import HuggingFaceEmbeddings
-
-# 새로운 임포트 문
 from langchain.embeddings import HuggingFaceEmbeddings
-
-# 나머지 코드는 그대로 유지
 import fitz  # PyMuPDF
 import pandas as pd
 import numpy as np
@@ -42,61 +36,45 @@ def pdf_to_image(page):
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return np.array(img)
 
-# 하이라이트 영역 탐지
+def is_highlight_color(color):
+    # RGB 값을 HSV로 변환
+    hsv = cv2.cvtColor(np.uint8([[color]]), cv2.COLOR_RGB2HSV)[0][0]
+    
+    # 흰색, 검정색, 회색 제외
+    if (color[0] > 200 and color[1] > 200 and color[2] > 200) or \
+       (color[0] < 50 and color[1] < 50 and color[2] < 50) or \
+       (abs(color[0] - color[1]) < 10 and abs(color[1] - color[2]) < 10):
+        return False
+    
+    # 채도가 낮은 경우 제외 (회색 계열)
+    if hsv[1] < 50:
+        return False
+    
+    return True
+
 def detect_highlights(image, page_num):
-    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-    s = hsv[:,:,1]
-    v = hsv[:,:,2]
-
-    saturation_threshold = 30
-    saturation_mask = s > saturation_threshold
-
-    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
+    height, width = image.shape[:2]
+    mask = np.zeros((height, width), dtype=np.uint8)
+    
+    for y in range(height):
+        for x in range(width):
+            if is_highlight_color(image[y, x]):
+                mask[y, x] = 255
 
     kernel = np.ones((5,5), np.uint8)
-    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-    # 디버깅: 마스크 이미지 저장
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), mask)
 
-    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 디버깅: 윤곽선이 그려진 이미지 저장
-    contour_image = image.copy()
-    cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
-
-    return contours
-
-# 강조된 영역 반환
-def get_capture_regions(contours, image_height, image_width):
-    if not contours:
-        return []
-
-    capture_height = image_height // 3
-    sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
-
-    regions = []
-    current_region = None
-
-    for contour in sorted_contours:
+    highlighted_regions = []
+    for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
+        highlighted_regions.append((x, y, x+w, y+h))
 
-        if current_region is None:
-            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-        elif y - current_region[1] < capture_height//2:
-            current_region[1] = min(image_height, y + h + capture_height//2)
-        else:
-            regions.append(current_region)
-            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-
-    if current_region:
-        regions.append(current_region)
-
-    return regions
+    return highlighted_regions
 
 # PDF에서 테이블을 추출하고 엑셀로 저장하는 함수
 def extract_tables_to_excel(pdf_path, output_excel_path):
@@ -123,31 +101,22 @@ def extract_tables_to_excel(pdf_path, output_excel_path):
     log_to_file(f"테이블이 추출되어 '{output_excel_path}'에 저장되었습니다.")
 
 # PDF에서 텍스트 추출 및 처리
-def extract_and_process_text(doc, page_number, highlight_regions):
+def extract_and_process_text(doc, page_number, highlighted_regions):
     page = doc[page_number]
-    text = page.get_text()
-    
-    # 텍스트 분할
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=100,
-        chunk_overlap=20,
-        length_function=len
-    )
-    chunks = text_splitter.split_text(text)
-    
-    # 강조된 텍스트 식별
     highlighted_chunks = []
-    for i, chunk in enumerate(chunks):
-        if any(region[0] <= i * 100 <= region[1] for region in highlight_regions):
-            highlighted_chunks.append(chunk)
-    
+
+    for region in highlighted_regions:
+        x0, y0, x1, y1 = region
+        text = page.get_text("text", clip=fitz.Rect(x0, y0, x1, y1))
+        if text.strip():
+            highlighted_chunks.append(text.strip())
+
     # 디버깅: 강조된 텍스트 저장
     with open(os.path.join(LOG_OUTPUT_DIR, "highlighted_chunks.txt"), "w") as f:
         for chunk in highlighted_chunks:
             f.write(chunk + "\n\n")
     
     return highlighted_chunks
-
 
 # 텍스트 유사도 계산 함수
 def similar(a, b):
@@ -251,11 +220,10 @@ def main(pdf_path, excel_path):
     image = pdf_to_image(page)
 
     # 강조된 영역 탐지
-    contours = detect_highlights(image, page_number + 1)
-    highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
+    highlighted_regions = detect_highlights(image, page_number + 1)
 
     # PDF에서 강조된 텍스트 추출
-    highlighted_chunks = extract_and_process_text(doc, page_number, highlight_regions)
+    highlighted_chunks = extract_and_process_text(doc, page_number, highlighted_regions)
 
     # 엑셀 파일에서 강조된 텍스트 찾기
     matches = find_highlighted_text_in_excel(excel_path, highlighted_chunks)
@@ -265,7 +233,7 @@ def main(pdf_path, excel_path):
 
     # 디버깅: 전체 프로세스 요약
     log_to_file(f"처리된 PDF 페이지: {page_number + 1}")
-    log_to_file(f"추출된 강조 영역 수: {len(highlight_regions)}")
+    log_to_file(f"추출된 강조 영역 수: {len(highlighted_regions)}")
     log_to_file(f"추출된 강조 텍스트 청크 수: {len(highlighted_chunks)}")
     log_to_file(f"매칭된 결과 수: {len(matches)}")
 
