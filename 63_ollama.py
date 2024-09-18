@@ -23,35 +23,29 @@ def pdf_to_image(page):
 # 하이라이트 영역 탐지
 def detect_highlights(image, page_num):
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-    
-    # 노란색 범위 정의 (필요에 따라 조정)
-    lower_yellow = np.array([20, 100, 100])
-    upper_yellow = np.array([30, 255, 255])
-    
-    # 마스크 생성
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-    
-    # 노이즈 제거
+    s = hsv[:,:,1]
+    v = hsv[:,:,2]
+
+    saturation_threshold = 30
+    saturation_mask = s > saturation_threshold
+
+    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
+
     kernel = np.ones((5,5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
 
     # 디버깅: 마스크 이미지 저장
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), mask)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
 
-    # 윤곽선 찾기
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # 디버깅: 윤곽선이 그려진 이미지 저장
     contour_image = image.copy()
     cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
-    
-    # 감지된 영역 표시
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        cv2.rectangle(contour_image, (x, y), (x+w, y+h), (255, 0, 0), 2)
-
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_detected.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
 
     return contours
 
@@ -128,6 +122,12 @@ def main(pdf_path, output_excel_path):
     # 강조된 영역 탐지
     contours = detect_highlights(image, page_number + 1)
     highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
+
+    # 강조 영역이 표시된 이미지 저장
+    highlighted_image = image.copy()
+    for region in highlight_regions:
+        cv2.rectangle(highlighted_image, (0, region[0]), (image.shape[1], region[1]), (0, 255, 0), 2)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'), cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
 
     print(f"감지된 강조 영역 수: {len(highlight_regions)}")
     print(f"강조 영역: {highlight_regions}")
