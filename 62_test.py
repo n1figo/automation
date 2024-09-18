@@ -83,19 +83,26 @@ def extract_and_process_tables(doc, page_number, highlight_regions):
     
     processed_data = []
 
-    for table in tables:
+    for table_index, table in enumerate(tables):
         df = pd.DataFrame(table.extract())
         table_bbox = table.bbox  # 테이블의 경계 상자 정보
+
+        # table_bbox를 언패킹
+        x0, y0, x1, y1 = table_bbox
+
+        print(f"Table {table_index + 1} 위치: (x0={x0}, y0={y0}, x1={x1}, y1={y1})")
 
         for row_index in range(len(df)):
             row_data = df.iloc[row_index]
             
             # 행의 y 좌표 계산 (테이블 상단에서의 상대적 위치)
-            row_y = table_bbox.y0 + (row_index + 1) * (table_bbox.y1 - table_bbox.y0) / (len(df) + 1)
+            row_y = y0 + (row_index + 1) * (y1 - y0) / (len(df) + 1)
             
             row_highlighted = check_highlight(row_y, highlight_regions)
             row_data["변경사항"] = "추가" if row_highlighted else ""
             processed_data.append(row_data)
+
+            print(f"Table {table_index + 1}, Row {row_index + 1}: y={row_y}, Highlighted: {row_highlighted}")
 
     return pd.DataFrame(processed_data)
 
