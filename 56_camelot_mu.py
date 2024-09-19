@@ -49,14 +49,13 @@ def process_tables(tables, highlighted_areas):
         df['변경사항'] = ''
         df['Table_Number'] = i + 1
         
-        for idx, row in enumerate(table.cells):
-            row_bbox = row[0].bbox
-            row_top, row_bottom = row_bbox[1], row_bbox[3]
+        for idx, row in df.iterrows():
+            row_top = table._bbox[0] + (idx / len(df)) * (table._bbox[2] - table._bbox[0])
+            row_bottom = table._bbox[0] + ((idx + 1) / len(df)) * (table._bbox[2] - table._bbox[0])
             
             for area in highlighted_areas:
-                area_top, area_bottom = area[1], area[3]
+                area_top, _, area_bottom, _ = area
                 
-                # 강조 영역과 행이 겹치는지 확인
                 if (area_top <= row_top <= area_bottom) or \
                    (area_top <= row_bottom <= area_bottom) or \
                    (row_top <= area_top <= row_bottom):
@@ -89,14 +88,17 @@ def visualize_results(page, highlighted_areas, tables, output_path):
     img = page.get_pixmap()
     img_np = np.frombuffer(img.samples, dtype=np.uint8).reshape(img.height, img.width, 3)
     
+    # 이미지 복사하여 수정 가능한 배열로 변환
+    img_np_copy = img_np.copy()
+    
     for area in highlighted_areas:
-        cv2.rectangle(img_np, (int(area[0]), int(area[1])), (int(area[2]), int(area[3])), (0, 255, 0), 2)
+        cv2.rectangle(img_np_copy, (int(area[0]), int(area[1])), (int(area[2]), int(area[3])), (0, 255, 0), 2)
     
     for table in tables:
         x1, y1, x2, y2 = table._bbox
-        cv2.rectangle(img_np, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+        cv2.rectangle(img_np_copy, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
     
-    cv2.imwrite(output_path, cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(output_path, cv2.cvtColor(img_np_copy, cv2.COLOR_RGB2BGR))
     print(f"Visualization saved to {output_path}")
 
 def main(pdf_path, output_excel_path):
