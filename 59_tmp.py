@@ -93,7 +93,7 @@ def get_capture_regions(contours, image_height, image_width):
 
 def integrate_abnormal_rows(df):
     # 주요 열 정의 (이 열들의 값이 있으면 새로운 행으로 간주)
-    key_columns = ['보장명', '특약명칭(번호)']
+    key_columns = ['보장명']  # '특약명칭(번호)' 제거
     # 병합 대상 열 (이 열들의 값은 병합 시 결합됨)
     merge_columns = ['지급사유', '지급금액']
 
