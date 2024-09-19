@@ -1,207 +1,199 @@
-import fitz
+import fitz  # PyMuPDF
 import pandas as pd
 import numpy as np
 import cv2
 import os
 from PIL import Image
-from paddleocr import PaddleOCR
 import logging
-import traceback
-import gc
 
+# 로깅 설정
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# 디버깅 모드 설정
 DEBUG_MODE = True
+
+# 타겟 헤더 정의
 TARGET_HEADERS = ["보장명", "지급사유", "지급금액"]
+
+# 이미지 저장 경로 설정
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
-try:
-    ocr = PaddleOCR(use_angle_cls=True, lang='korean', use_gpu=False, 
-                    enable_mkldnn=False, use_tensorrt=False, 
-                    cpu_threads=1, enable_omp=False)
-    logging.info("PaddleOCR initialized successfully (CPU mode, memory optimized)")
-except Exception as e:
-    logging.error(f"Failed to initialize PaddleOCR: {str(e)}")
-    raise
-
 def pdf_to_image(page):
-    try:
-        pix = page.get_pixmap()
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        img.thumbnail((1000, 1000))  # 크기를 1000x1000으로 조정
-        return np.array(img)
-    except Exception as e:
-        logging.error(f"Error in pdf_to_image: {str(e)}")
-        raise
-    finally:
-        gc.collect()
+    pix = page.get_pixmap()
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    return np.array(img)
 
+# 하이라이트 영역 탐지
 def detect_highlights(image, page_num):
-    try:
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        s = hsv[:,:,1]
-        v = hsv[:,:,2]
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    s = hsv[:,:,1]
+    v = hsv[:,:,2]
 
-        saturation_threshold = 30
-        value_threshold = 200
-        highlight_mask = (s > saturation_threshold) & (v > value_threshold)
+    saturation_threshold = 30
+    saturation_mask = s > saturation_threshold
 
-        kernel = np.ones((5,5), np.uint8)
-        highlight_mask = cv2.morphologyEx(highlight_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
-        highlight_mask = cv2.morphologyEx(highlight_mask, cv2.MORPH_OPEN, kernel)
+    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        if DEBUG_MODE:
-            cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), highlight_mask * 255)
+    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
 
-        contours, _ = cv2.findContours(highlight_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    kernel = np.ones((5,5), np.uint8)
+    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
 
-        if DEBUG_MODE:
-            contour_image = image.copy()
-            cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
-            cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
+    # 디버깅: 마스크 이미지 저장
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
 
-        logging.info(f"Highlights detected for page {page_num}")
-        return contours
-    except Exception as e:
-        logging.error(f"Error in detect_highlights: {str(e)}")
-        raise
-    finally:
-        gc.collect()
+    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    # 디버깅: 윤곽선이 그려진 이미지 저장
+    contour_image = image.copy()
+    cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
+
+    logging.info(f"하이라이트 영역 탐지 완료: {len(contours)}개의 윤곽선 발견")
+    return contours
+
+# 강조된 영역 반환
 def get_capture_regions(contours, image_height, image_width):
-    try:
-        if not contours:
-            return []
+    if not contours:
+        return []
 
-        capture_height = image_height // 3
-        sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
+    capture_height = image_height // 3
+    sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
 
-        regions = []
-        current_region = None
+    regions = []
+    current_region = None
 
-        for contour in sorted_contours:
-            x, y, w, h = cv2.boundingRect(contour)
+    for contour in sorted_contours:
+        x, y, w, h = cv2.boundingRect(contour)
 
-            if current_region is None:
-                current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-            elif y - current_region[1] < capture_height//2:
-                current_region[1] = min(image_height, y + h + capture_height//2)
-            else:
-                regions.append(current_region)
-                current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-
-        if current_region:
+        if current_region is None:
+            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
+        elif y - current_region[1] < capture_height//2:
+            current_region[1] = min(image_height, y + h + capture_height//2)
+        else:
             regions.append(current_region)
+            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
 
-        logging.info(f"Capture regions identified: {len(regions)}")
-        return regions
-    except Exception as e:
-        logging.error(f"Error in get_capture_regions: {str(e)}")
-        raise
-    finally:
-        gc.collect()
+    if current_region:
+        regions.append(current_region)
 
-def process_ocr_result(word_info, highlight_regions):
-    text, confidence = word_info[1]
-    bbox = word_info[0]
-    text_y = bbox[0][1]
-    is_highlighted = any(region[0] <= text_y <= region[1] for region in highlight_regions)
+    logging.info(f"강조 영역 추출 완료: {len(regions)}개의 영역 발견")
+    for i, region in enumerate(regions):
+        logging.debug(f"강조 영역 {i+1}: y={region[0]} to y={region[1]}")
+    return regions
+
+# PDF에서 테이블을 추출하고 강조된 행을 찾는 함수
+def extract_and_process_tables(doc, page_number, highlight_regions):
+    page = doc[page_number]
+    table_finder = page.find_tables()
+    tables = table_finder.tables  # 실제 테이블 목록 가져오기
     
-    for header in TARGET_HEADERS:
-        if text.startswith(header):
-            return {
-                "header": header,
-                "value": text[len(header):].strip(),
-                "is_highlighted": is_highlighted
-            }
-    return None
+    logging.info(f"페이지 {page_number+1}에서 {len(tables)}개의 테이블 발견")
+    
+    processed_data = []
 
-def extract_and_process_text(image, highlight_regions):
-    try:
-        height, width = image.shape[:2]
-        sections = []
-        for i in range(0, height, 300):  # 300픽셀 높이의 섹션으로 나누기
-            section = image[i:i+300, :]
-            sections.append(section)
-        
-        processed_data = []
-        current_row = {}
-        
-        for section in sections:
-            result = ocr.ocr(section, cls=True)
-            for line in result:
-                for word_info in line:
-                    processed = process_ocr_result(word_info, highlight_regions)
-                    if processed:
-                        if processed["header"] in current_row and current_row[processed["header"]]:
-                            processed_data.append(current_row)
-                            current_row = {}
-                        current_row[processed["header"]] = processed["value"]
-                        if processed["is_highlighted"]:
-                            current_row["변경사항"] = "추가"
+    if not tables:
+        logging.warning(f"페이지 {page_number+1}에서 테이블을 찾을 수 없습니다.")
+        return pd.DataFrame()  # 빈 DataFrame 반환
+
+    for table_index, table in enumerate(tables):
+        cells = table.extract()
+        if not cells:
+            logging.warning(f"Table {table_index + 1}에서 셀을 추출할 수 없습니다.")
+            continue
+
+        # 열 이름 중복 처리
+        columns = cells[0]
+        unique_columns = []
+        for i, col in enumerate(columns):
+            if col in unique_columns:
+                unique_columns.append(f"{col}_{i}")
+            else:
+                unique_columns.append(col)
+
+        df = pd.DataFrame(cells[1:], columns=unique_columns)
+        table_bbox = table.bbox  # 테이블의 경계 상자 정보
+
+        # table_bbox를 언패킹
+        x0, y0, x1, y1 = table_bbox
+
+        logging.info(f"Table {table_index + 1} 위치: (x0={x0}, y0={y0}, x1={x1}, y1={y1})")
+        logging.info(f"Table {table_index + 1} 크기: {len(df)}행 x {len(df.columns)}열")
+        logging.debug(f"Table {table_index + 1} 열: {df.columns.tolist()}")
+
+        for row_index, row in df.iterrows():
+            row_data = row.to_dict()
             
-            del result
-            gc.collect()
-        
-        if current_row:
-            processed_data.append(current_row)
-        
-        df = pd.DataFrame(processed_data)
-        logging.info(f"OCR results processed. Rows extracted: {len(df)}")
-        return df
-    except Exception as e:
-        logging.error(f"Error in extract_and_process_text: {str(e)}")
-        raise
-    finally:
-        gc.collect()
+            # 행의 y 좌표 계산 (테이블 상단에서의 상대적 위치)
+            row_y = y0 + (row_index + 1) * (y1 - y0) / (len(df) + 1)
+            
+            row_highlighted = check_highlight(row_y, highlight_regions)
+            row_data["변경사항"] = "추가" if row_highlighted else ""
+            processed_data.append(row_data)
 
+            logging.debug(f"Table {table_index + 1}, Row {row_index + 1}: y={row_y}, Highlighted: {row_highlighted}")
+
+    if not processed_data:
+        logging.warning("처리된 데이터가 없습니다.")
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(processed_data)
+    logging.info(f"총 {len(result_df)}개의 행이 추출되었습니다.")
+    logging.debug(f"추출된 데이터 열: {result_df.columns.tolist()}")
+    return result_df
+
+# 강조 영역 확인
+def check_highlight(row_y, highlight_regions):
+    for region in highlight_regions:
+        if region[0] <= row_y <= region[1]:
+            return True
+    return False
+
+# 엑셀로 저장
 def save_to_excel(df, output_path):
-    try:
-        df.to_excel(output_path, index=False)
-        logging.info(f"File saved successfully to {output_path}")
-    except Exception as e:
-        logging.error(f"Error saving to Excel: {str(e)}")
-        raise
-    finally:
-        gc.collect()
+    df.to_excel(output_path, index=False)
+    logging.info(f"파일이 '{output_path}'에 저장되었습니다.")
 
+# 메인 함수
 def main(pdf_path, output_excel_path):
-    logging.info("Starting PDF extraction process")
-    try:
-        doc = fitz.open(pdf_path)
-        page_number = 50  # 51페이지 (인덱스는 0부터 시작)
-        
-        logging.info(f"Processing page {page_number + 1}")
-        page = doc[page_number]
-        image = pdf_to_image(page)
-        
-        if DEBUG_MODE:
-            cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_original.png'), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-        
-        contours = detect_highlights(image, page_number + 1)
-        highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
-        
-        if DEBUG_MODE:
-            highlighted_image = image.copy()
-            for region in highlight_regions:
-                cv2.rectangle(highlighted_image, (0, region[0]), (image.shape[1], region[1]), (0, 255, 0), 2)
-            cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'), cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
-        
-        processed_df = extract_and_process_text(image, highlight_regions)
-        
-        if DEBUG_MODE:
-            logging.info(f"Page {page_number + 1} processed data:")
-            logging.info(processed_df)
-        
-        save_to_excel(processed_df, output_excel_path)
-        
-        logging.info(f"51페이지의 처리된 데이터가 {output_excel_path}에 저장되었습니다.")
-    except Exception as e:
-        logging.error(f"An error occurred in main: {str(e)}")
-        logging.error(traceback.format_exc())
-    finally:
-        gc.collect()
+    logging.info("PDF에서 개정된 부분을 추출합니다...")
+
+    # PyMuPDF로 PDF 열기
+    doc = fitz.open(pdf_path)
+    page_number = 50  # 페이지 번호 설정 (여기서는 51페이지)
+
+    page = doc[page_number]
+    image = pdf_to_image(page)
+
+    # 원본 이미지 저장
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_original.png'), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+    # 강조된 영역 탐지
+    contours = detect_highlights(image, page_number + 1)
+    highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
+
+    # 강조 영역이 표시된 이미지 저장
+    highlighted_image = image.copy()
+    for region in highlight_regions:
+        cv2.rectangle(highlighted_image, (0, region[0]), (image.shape[1], region[1]), (0, 255, 0), 2)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'), cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
+
+    logging.info(f"감지된 강조 영역 수: {len(highlight_regions)}")
+    logging.info(f"강조 영역: {highlight_regions}")
+
+    # PyMuPDF를 사용하여 테이블 추출 및 처리
+    processed_df = extract_and_process_tables(doc, page_number, highlight_regions)
+
+    # 처리된 데이터 출력
+    logging.info("처리된 데이터:")
+    logging.info(processed_df)
+
+    # 엑셀로 저장
+    save_to_excel(processed_df, output_excel_path)
+
+    logging.info(f"처리된 데이터가 {output_excel_path}에 저장되었습니다.")
 
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
