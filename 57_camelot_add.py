@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import cv2
 import os
-from PIL import Image
 import fitz
+from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
@@ -21,24 +21,23 @@ def pdf_to_image(page):
     return np.array(img)
 
 def detect_highlights(image, page_num):
-    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-    s = hsv[:,:,1]
-    v = hsv[:,:,2]
-
-    saturation_threshold = 30
-    saturation_mask = s > saturation_threshold
-
-    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
-
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # 테이블 헤더(회색) 및 일반 텍스트(검정) 마스크 생성
+    header_mask = cv2.inRange(image, (200, 200, 200), (230, 230, 230))
+    text_mask = cv2.inRange(image, (0, 0, 0), (50, 50, 50))
+    
+    # 강조 영역 마스크 (헤더와 일반 텍스트 제외)
+    highlight_mask = cv2.bitwise_and(binary, cv2.bitwise_not(cv2.bitwise_or(header_mask, text_mask)))
+    
     kernel = np.ones((5,5), np.uint8)
-    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+    highlight_mask = cv2.morphologyEx(highlight_mask, cv2.MORPH_CLOSE, kernel)
+    highlight_mask = cv2.morphologyEx(highlight_mask, cv2.MORPH_OPEN, kernel)
 
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), highlight_mask)
 
-    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(highlight_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     contour_image = image.copy()
     cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
@@ -46,83 +45,58 @@ def detect_highlights(image, page_num):
 
     return contours
 
-def get_capture_regions(contours, image_height, image_width):
-    if not contours:
-        return []
-
-    capture_height = image_height // 3
-    sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[1])
-
+def get_highlight_regions(contours, image_height):
     regions = []
-    current_region = None
-
-    for contour in sorted_contours:
+    for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-
-        if current_region is None:
-            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-        elif y - current_region[1] < capture_height//2:
-            current_region[1] = min(image_height, y + h + capture_height//2)
-        else:
-            regions.append(current_region)
-            current_region = [max(0, y - capture_height//2), min(image_height, y + h + capture_height//2)]
-
-    if current_region:
-        regions.append(current_region)
-
+        regions.append((y, y + h))
     return regions
 
 def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Extracting tables from page {page_number} using Camelot...")
-    try:
-        tables = camelot.read_pdf(pdf_path, pages=str(page_number), flavor='lattice')
-        print(f"Found {len(tables)} tables on page {page_number}")
-        return tables
-    except Exception as e:
-        print(f"Error extracting tables: {e}")
-        return []
+    tables = camelot.read_pdf(pdf_path, pages=str(page_number), flavor='lattice')
+    print(f"Found {len(tables)} tables on page {page_number}")
+    return tables
 
 def process_tables(tables, highlight_regions, page_height):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df
-        # Camelot의 테이블 위치 정보 사용
         y1, x1, y2, x2 = table._bbox
         
         for row_index in range(len(df)):
             row_data = df.iloc[row_index].copy()
             
-            # 행의 y 좌표 계산 (PDF 좌표계에서 이미지 좌표계로 변환)
-            row_y = page_height - (y1 + (row_index + 1) * (y2 - y1) / (len(df) + 1))
+            # 행의 상단과 하단 y 좌표 계산 (PDF 좌표계에서 이미지 좌표계로 변환)
+            row_top = page_height - (y1 + row_index * (y2 - y1) / len(df))
+            row_bottom = page_height - (y1 + (row_index + 1) * (y2 - y1) / len(df))
             
-            row_highlighted = check_highlight(row_y, highlight_regions)
+            row_highlighted = check_highlight((row_top, row_bottom), highlight_regions)
             row_data["변경사항"] = "추가" if row_highlighted else ""
             row_data["Table_Number"] = i + 1
             processed_data.append(row_data)
 
     return pd.DataFrame(processed_data)
 
-def check_highlight(row_y, highlight_regions):
-    for region in highlight_regions:
-        if region[0] <= row_y <= region[1]:
+def check_highlight(row_range, highlight_regions):
+    row_top, row_bottom = row_range
+    for region_top, region_bottom in highlight_regions:
+        if (region_top <= row_top <= region_bottom) or (region_top <= row_bottom <= region_bottom) or \
+           (row_top <= region_top <= row_bottom) or (row_top <= region_bottom <= row_bottom):
             return True
     return False
 
 def save_to_excel_with_highlight(df, output_path):
     df.to_excel(output_path, index=False)
     
-    # 엑셀 파일 열기
     wb = load_workbook(output_path)
     ws = wb.active
 
-    # 노란색 배경 스타일 정의
     yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
 
-    # '변경사항' 열의 인덱스 찾기
-    change_col_index = df.columns.get_loc('변경사항') + 1  # Excel은 1부터 시작하므로 1을 더함
+    change_col_index = df.columns.get_loc('변경사항') + 1
 
-    # 각 행을 순회하며 '추가' 항목에 노란색 배경 적용
-    for row in range(2, ws.max_row + 1):  # 2부터 시작 (헤더 제외)
+    for row in range(2, ws.max_row + 1):
         if ws.cell(row=row, column=change_col_index).value == '추가':
             for col in range(1, ws.max_column + 1):
                 ws.cell(row=row, column=col).fill = yellow_fill
@@ -145,7 +119,7 @@ def main(pdf_path, output_excel_path):
 
     # 강조된 영역 탐지
     contours = detect_highlights(image, page_number + 1)
-    highlight_regions = get_capture_regions(contours, image.shape[0], image.shape[1])
+    highlight_regions = get_highlight_regions(contours, image.shape[0])
 
     # 강조 영역이 표시된 이미지 저장
     highlighted_image = image.copy()
@@ -159,16 +133,8 @@ def main(pdf_path, output_excel_path):
     # Camelot을 사용하여 표 추출
     tables = extract_tables_with_camelot(pdf_path, page_number + 1)
 
-    if not tables:
-        print("No tables were extracted. Exiting.")
-        return
-
     # 추출된 표 처리
     processed_df = process_tables(tables, highlight_regions, image.shape[0])
-
-    if processed_df.empty:
-        print("No data to process. Exiting.")
-        return
 
     # 처리된 데이터 출력
     print(processed_df)
