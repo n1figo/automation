@@ -11,9 +11,18 @@ DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
+def int_to_rgb(color_int):
+    b = color_int & 255
+    g = (color_int >> 8) & 255
+    r = (color_int >> 16) & 255
+    return r, g, b
+
 def is_highlighted(color, threshold=0.8):
-    # 노란색 강조 확인 (RGB 값 사용)
-    return color[0] > threshold and color[1] > threshold and color[2] < 0.5
+    if isinstance(color, int):
+        r, g, b = int_to_rgb(color)
+    else:
+        r, g, b = color
+    return r > threshold * 255 and g > threshold * 255 and b < 0.5 * 255
 
 def get_highlighted_areas(page):
     highlighted_areas = []
@@ -21,6 +30,8 @@ def get_highlighted_areas(page):
         if "lines" in block:
             for line in block["lines"]:
                 for span in line["spans"]:
+                    if DEBUG_MODE:
+                        print(f"Span color: {span['color']}")
                     if is_highlighted(span["color"]):
                         highlighted_areas.append(span["bbox"])
     return highlighted_areas
@@ -35,16 +46,25 @@ def process_tables(tables, highlighted_areas):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df.copy()
+        df['변경사항'] = ''
+        df['Table_Number'] = i + 1
+        
         for idx, row in enumerate(table.cells):
             row_bbox = row[0].bbox
+            row_top, row_bottom = row_bbox[1], row_bbox[3]
+            
             for area in highlighted_areas:
-                if np.isclose(row_bbox[1], area[1], atol=5) or np.isclose(row_bbox[3], area[3], atol=5):
+                area_top, area_bottom = area[1], area[3]
+                
+                # 강조 영역과 행이 겹치는지 확인
+                if (area_top <= row_top <= area_bottom) or \
+                   (area_top <= row_bottom <= area_bottom) or \
+                   (row_top <= area_top <= row_bottom):
                     df.at[idx, '변경사항'] = '추가'
                     break
-            if '변경사항' not in df.columns:
-                df['변경사항'] = ''
-            df.at[idx, 'Table_Number'] = i + 1
+        
         processed_data.append(df)
+    
     return pd.concat(processed_data, ignore_index=True)
 
 def save_to_excel_with_highlight(df, output_path):
@@ -69,11 +89,9 @@ def visualize_results(page, highlighted_areas, tables, output_path):
     img = page.get_pixmap()
     img_np = np.frombuffer(img.samples, dtype=np.uint8).reshape(img.height, img.width, 3)
     
-    # 강조 영역 시각화
     for area in highlighted_areas:
         cv2.rectangle(img_np, (int(area[0]), int(area[1])), (int(area[2]), int(area[3])), (0, 255, 0), 2)
     
-    # 테이블 영역 시각화
     for table in tables:
         x1, y1, x2, y2 = table._bbox
         cv2.rectangle(img_np, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
@@ -86,26 +104,21 @@ def main(pdf_path, output_excel_path):
 
     page_number = 50  # 51페이지 (0-based index)
 
-    # PyMuPDF로 PDF 열기 및 강조 영역 식별
     doc = fitz.open(pdf_path)
     page = doc[page_number]
     highlighted_areas = get_highlighted_areas(page)
 
     print(f"Found {len(highlighted_areas)} highlighted areas")
 
-    # Camelot을 사용하여 표 추출
     tables = extract_tables_with_camelot(pdf_path, page_number + 1)
 
-    # 추출된 표 처리
     processed_df = process_tables(tables, highlighted_areas)
 
     print(processed_df)
 
-    # 결과 시각화
     viz_output_path = os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_visualization.png')
     visualize_results(page, highlighted_areas, tables, viz_output_path)
 
-    # 엑셀로 저장 (하이라이트 포함)
     save_to_excel_with_highlight(processed_df, output_excel_path)
 
     print(f"처리된 데이터가 {output_excel_path}에 저장되었습니다.")
