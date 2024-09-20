@@ -36,13 +36,47 @@ def get_highlighted_areas(page):
                         highlighted_areas.append(span["bbox"])
     return highlighted_areas
 
+def extract_highlighted_rows_with_camelot(pdf_path, page_number, highlighted_areas):
+    doc = fitz.open(pdf_path)
+    page = doc[page_number]
+    height = page.rect.height
+    
+    highlighted_rows = []
+    for area in highlighted_areas:
+        x1, y1, x2, y2 = area
+        y1, y2 = height - y2, height - y1  # Camelot uses bottom-left as origin
+        
+        tables = camelot.read_pdf(
+            pdf_path,
+            pages=str(page_number + 1),
+            flavor='stream',
+            table_areas=[f"{0},{y1},{page.rect.width},{y2}"],
+            line_scale=40,
+            process_background=True,
+            strip_text=' .\n'
+        )
+        
+        if tables:
+            row_text = ' '.join(tables[0].df.iloc[0])
+            highlighted_rows.append(row_text)
+            print(f"Highlighted row: {row_text}")
+    
+    return highlighted_rows
+
 def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Extracting tables from page {page_number} using Camelot...")
-    tables = camelot.read_pdf(pdf_path, pages=str(page_number), flavor='lattice')
+    tables = camelot.read_pdf(
+        pdf_path,
+        pages=str(page_number),
+        flavor='lattice',
+        line_scale=40,
+        process_background=True,
+        strip_text=' .\n'
+    )
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def process_tables(tables, highlighted_areas):
+def process_tables(tables, highlighted_rows):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df.copy()
@@ -50,17 +84,9 @@ def process_tables(tables, highlighted_areas):
         df['Table_Number'] = i + 1
         
         for idx, row in df.iterrows():
-            row_top = table._bbox[0] + (idx / len(df)) * (table._bbox[2] - table._bbox[0])
-            row_bottom = table._bbox[0] + ((idx + 1) / len(df)) * (table._bbox[2] - table._bbox[0])
-            
-            for area in highlighted_areas:
-                area_top, _, area_bottom, _ = area
-                
-                if (area_top <= row_top <= area_bottom) or \
-                   (area_top <= row_bottom <= area_bottom) or \
-                   (row_top <= area_top <= row_bottom):
-                    df.at[idx, '변경사항'] = '추가'
-                    break
+            row_text = ' '.join(str(cell) for cell in row)  # 모든 셀을 문자열로 변환
+            if any(highlighted_row.lower() in row_text.lower() for highlighted_row in highlighted_rows):
+                df.at[idx, '변경사항'] = '추가'
         
         processed_data.append(df)
     
@@ -88,7 +114,6 @@ def visualize_results(page, highlighted_areas, tables, output_path):
     img = page.get_pixmap()
     img_np = np.frombuffer(img.samples, dtype=np.uint8).reshape(img.height, img.width, 3)
     
-    # 이미지 복사하여 수정 가능한 배열로 변환
     img_np_copy = img_np.copy()
     
     for area in highlighted_areas:
@@ -102,28 +127,35 @@ def visualize_results(page, highlighted_areas, tables, output_path):
     print(f"Visualization saved to {output_path}")
 
 def main(pdf_path, output_excel_path):
-    print("Extracting structure and tables from PDF...")
+    try:
+        print("Extracting structure and tables from PDF...")
 
-    page_number = 50  # 51페이지 (0-based index)
+        page_number = 50  # 51페이지 (0-based index)
 
-    doc = fitz.open(pdf_path)
-    page = doc[page_number]
-    highlighted_areas = get_highlighted_areas(page)
+        doc = fitz.open(pdf_path)
+        page = doc[page_number]
+        highlighted_areas = get_highlighted_areas(page)
 
-    print(f"Found {len(highlighted_areas)} highlighted areas")
+        print(f"Found {len(highlighted_areas)} highlighted areas")
 
-    tables = extract_tables_with_camelot(pdf_path, page_number + 1)
+        highlighted_rows = extract_highlighted_rows_with_camelot(pdf_path, page_number, highlighted_areas)
 
-    processed_df = process_tables(tables, highlighted_areas)
+        tables = extract_tables_with_camelot(pdf_path, page_number + 1)
 
-    print(processed_df)
+        processed_df = process_tables(tables, highlighted_rows)
 
-    viz_output_path = os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_visualization.png')
-    visualize_results(page, highlighted_areas, tables, viz_output_path)
+        print(processed_df)
 
-    save_to_excel_with_highlight(processed_df, output_excel_path)
+        viz_output_path = os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_visualization.png')
+        visualize_results(page, highlighted_areas, tables, viz_output_path)
 
-    print(f"처리된 데이터가 {output_excel_path}에 저장되었습니다.")
+        save_to_excel_with_highlight(processed_df, output_excel_path)
+
+        print(f"처리된 데이터가 {output_excel_path}에 저장되었습니다.")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
