@@ -7,8 +7,7 @@ import fitz
 from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-import torch
+from paddleocr import PaddleOCR
 from fuzzywuzzy import fuzz
 
 # 디버그 모드 설정
@@ -18,16 +17,24 @@ TXT_OUTPUT_DIR = "/workspaces/automation/output/texts"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
 
-# TrOCR 모델 초기화
-processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten')
-model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten')
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
+# PaddleOCR 모델 초기화 (한국어 지원)
+ocr = PaddleOCR(use_angle_cls=True, lang='ko')  # 한국어 인식 설정
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return np.array(img)
+
+def preprocess_image_for_ocr(image):
+    # 그레이스케일 변환
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    # 해상도 증가 (2배)
+    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+    # 가우시안 블러로 노이즈 제거
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    # 이진화 (Otsu의 이진화)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(thresh)
 
 def detect_highlights(image, page_num):
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
@@ -71,7 +78,7 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions):
+def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions):
     doc = fitz.open(pdf_path)
     page = doc.load_page(page_number - 1)  # 0-based index
     pix = page.get_pixmap()
@@ -93,10 +100,18 @@ def extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions):
                 cropped_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'highlight_{page_number}_{idx}.png')
                 cropped_img.save(cropped_img_path)
 
-                # TrOCR을 사용하여 OCR 수행
-                inputs = processor(images=cropped_img, return_tensors="pt").to(device)
-                generated_ids = model.generate(**inputs)
-                ocr_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+                # 이미지 전처리
+                preprocessed_img = preprocess_image_for_ocr(np.array(cropped_img))
+
+                # PaddleOCR을 사용하여 OCR 수행
+                ocr_result = ocr.ocr(np.array(preprocessed_img), rec=True, cls=True)
+
+                # 텍스트 추출
+                ocr_text = ""
+                for line in ocr_result:
+                    ocr_text += line[1][0] + " "
+
+                ocr_text = ocr_text.strip()
 
                 if DEBUG_MODE:
                     print(f"OCR Text from region {idx}: {ocr_text}")
@@ -215,8 +230,8 @@ def main(pdf_path, output_excel_path):
         print("추출된 표가 없습니다.")
         return
 
-    # TrOCR을 통해 강조된 텍스트 추출
-    extracted_texts = extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions)
+    # PaddleOCR을 통해 강조된 텍스트 추출
+    extracted_texts = extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
 
     # 추출된 표 처리
     processed_df = process_tables(tables, highlight_regions, image.shape[0])
