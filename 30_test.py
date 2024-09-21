@@ -18,7 +18,7 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
 
 # PaddleOCR 모델 초기화 (한국어 지원)
-ocr = PaddleOCR(use_angle_cls=True, lang='ko')  # 한국어 인식 설정
+ocr = PaddleOCR(use_angle_cls=True, lang='korean')  # 한국어 인식 설정
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
