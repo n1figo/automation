@@ -3,10 +3,11 @@ import pandas as pd
 import numpy as np
 import cv2
 import os
-import fitz
+import fitz  # PyMuPDF
 from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+import pytesseract
 
 DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
@@ -50,8 +51,25 @@ def get_highlight_regions(contours, image_height):
         # OpenCV 좌표계를 PDF 좌표계로 변환
         top = image_height - (y + h)
         bottom = image_height - y
-        regions.append((top, bottom))
+        regions.append((top, bottom, x, y, w, h))  # 좌표와 크기도 저장
     return regions
+
+def extract_highlighted_texts(pdf_path, page_number, highlight_regions):
+    doc = fitz.open(pdf_path)
+    page = doc.load_page(page_number - 1)  # 0-based index
+    highlighted_texts = []
+    
+    for region in highlight_regions:
+        top, bottom, x, y, w, h = region
+        # PyMuPDF에서 사각형을 정의할 때는 (x0, y0, x1, y1)
+        rect = fitz.Rect(x, top, x + w, bottom)
+        words = page.get_text("words", clip=rect)  # 리스트 of (x0, y0, x1, y1, "word", block_no, line_no, word_no)
+        words_sorted = sorted(words, key=lambda w: (w[1], w[0]))  # y0, x0 순으로 정렬
+        line_text = " ".join([w[4] for w in words_sorted])
+        if line_text.strip():  # 비어있지 않은 경우
+            highlighted_texts.append(line_text.strip())
+    
+    return highlighted_texts
 
 def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Extracting tables from page {page_number} using Camelot...")
@@ -59,7 +77,7 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def process_tables(tables, highlight_regions, page_height):
+def process_tables(tables, highlighted_texts):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df
@@ -71,27 +89,23 @@ def process_tables(tables, highlight_regions, page_height):
 
         for row_index in range(len(df)):
             row_data = df.iloc[row_index].copy()
-            
+
             # 행의 상단과 하단 y 좌표 계산 (PDF 좌표계 사용)
             # 상단부터 계산하기 위해 y2에서부터 감소
             row_top = y2 - (row_index + 1) * row_height
             row_bottom = y2 - row_index * row_height
-            
-            row_highlighted = check_highlight((row_top, row_bottom), highlight_regions)
+
+            # 행의 전체 텍스트 추출
+            row_text = " ".join(row_data.astype(str).tolist())
+
+            # 강조된 텍스트가 행의 텍스트에 포함되는지 확인
+            row_highlighted = any(high_text in row_text for high_text in highlighted_texts)
+
             row_data["변경사항"] = "추가" if row_highlighted else ""
             row_data["Table_Number"] = i + 1
             processed_data.append(row_data)
 
     return pd.DataFrame(processed_data)
-
-def check_highlight(row_range, highlight_regions):
-    row_top, row_bottom = row_range
-    for region_top, region_bottom in highlight_regions:
-        # 행과 강조 영역이 겹치는지 확인
-        if (region_top <= row_top <= region_bottom) or (region_top <= row_bottom <= region_bottom) or \
-           (row_top <= region_top <= row_bottom) or (row_top <= region_bottom <= row_bottom):
-            return True
-    return False
 
 def save_to_excel_with_highlight(df, output_path):
     df.to_excel(output_path, index=False)
@@ -130,9 +144,10 @@ def main(pdf_path, output_excel_path):
     highlight_regions = get_highlight_regions(contours, image.shape[0])
 
     highlighted_image = image.copy()
-    for top, bottom in highlight_regions:
+    for region in highlight_regions:
+        top, bottom, x, y, w, h = region
         # PDF 좌표계를 OpenCV 좌표계로 변환하여 그리기
-        cv2.rectangle(highlighted_image, (0, image.shape[0] - bottom), (image.shape[1], image.shape[0] - top), (0, 255, 0), 2)
+        cv2.rectangle(highlighted_image, (x, image.shape[0] - bottom), (x + w, image.shape[0] - top), (0, 255, 0), 2)
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'), cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
 
     print(f"감지된 강조 영역 수: {len(highlight_regions)}")
@@ -145,8 +160,12 @@ def main(pdf_path, output_excel_path):
         print("추출된 표가 없습니다.")
         return
 
+    # 강조된 텍스트 추출
+    highlighted_texts = extract_highlighted_texts(pdf_path, page_number + 1, highlight_regions)
+    print(f"추출된 강조된 텍스트: {highlighted_texts}")
+
     # 추출된 표 처리
-    processed_df = process_tables(tables, highlight_regions, image.shape[0])
+    processed_df = process_tables(tables, highlighted_texts)
 
     print(processed_df)
 
