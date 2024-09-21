@@ -3,12 +3,13 @@ import pandas as pd
 import numpy as np
 import cv2
 import os
-import fitz
+import fitz  # PyMuPDF
 from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-from paddleocr import PaddleOCR
 from fuzzywuzzy import fuzz
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+import torch
 
 # 디버그 모드 설정
 DEBUG_MODE = True
@@ -19,8 +20,11 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(PREPROCESSED_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
 
-# PaddleOCR 모델 초기화 (한국어 지원)
-ocr = PaddleOCR(use_angle_cls=True, lang='korean')  # lang='korean'으로 수정
+# trOCR 모델과 프로세서 초기화
+processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten')
+model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten')
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
@@ -30,60 +34,38 @@ def pdf_to_image(page):
 def preprocess_image_for_ocr(image, idx, page_number):
     """
     이미지 전처리 함수:
-    - 강조색 제거 (Inpainting)
-    - 대비 향상 (CLAHE)
-    - 샤프닝 필터 적용
-    - 노이즈 제거 (Median Blur)
-    - Adaptive Thresholding 적용
-    - 해상도 증가 (2배)
+    1. 그레이스케일 변환
+    2. Adaptive Thresholding을 사용하여 이진화
+    3. 팽창(Dilation) 또는 침식(Erosion) 적용
+    4. 윤곽(Contours) 감지 및 강조
+    5. 전처리된 이미지 저장
     """
     try:
         # 원본 이미지 저장 (디버깅용)
         original_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'original_highlight_{page_number}_{idx}.png')
         Image.fromarray(image).save(original_img_path)
 
-        # 그레이스케일 변환
+        # 1. 그레이스케일 변환
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
-        # HSV 색상 공간으로 변환
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-
-        # 강조색(예: 노란색)의 HSV 범위 설정 (실제 하이라이트 색상에 따라 조정 필요)
-        lower_yellow = np.array([20, 100, 100])
-        upper_yellow = np.array([30, 255, 255])
-
-        # 강조색 마스크 생성
-        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-
-        # Inpainting을 사용하여 강조색 제거
-        # inpaint 메소드에는 2가지 알고리즘이 있다: cv2.INPAINT_TELEA, cv2.INPAINT_NS
-        inpainted = cv2.inpaint(gray, mask, 3, cv2.INPAINT_TELEA)
-
-        # 대비 향상 (CLAHE)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        inpainted = clahe.apply(inpainted)
-
-        # 샤프닝 필터 적용
-        kernel_sharpen = np.array([[0, -1, 0],
-                                    [-1, 5,-1],
-                                    [0, -1, 0]])
-        inpainted = cv2.filter2D(inpainted, -1, kernel_sharpen)
-
-        # 노이즈 제거 (Median Blur)
-        inpainted = cv2.medianBlur(inpainted, 3)
-
-        # Adaptive Thresholding 적용
-        thresh = cv2.adaptiveThreshold(inpainted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        # 2. Adaptive Thresholding을 사용하여 이진화
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                        cv2.THRESH_BINARY, 31, 2)
 
-        # 해상도 증가 (2배)
-        thresh = cv2.resize(thresh, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        # 3. 팽창(Dilation) 또는 침식(Erosion) 적용
+        kernel = np.ones((3,3), np.uint8)
+        processed = cv2.dilate(thresh, kernel, iterations=1)  # 팽창 적용
 
-        # 전처리된 이미지 저장 (디버깅용)
+        # 4. 윤곽(Contours) 감지 및 강조
+        contours, _ = cv2.findContours(processed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contour_image = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+        cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 1)
+
+        # 5. 전처리된 이미지 저장 (디버깅용)
         preprocessed_img_path = os.path.join(PREPROCESSED_OUTPUT_DIR, f'preprocessed_highlight_{page_number}_{idx}.png')
-        Image.fromarray(thresh).save(preprocessed_img_path)
+        Image.fromarray(contour_image).save(preprocessed_img_path)
 
-        return thresh
+        return processed
     except Exception as e:
         print(f"Exception in preprocess_image_for_ocr for region {idx}: {e}")
         return None
@@ -139,9 +121,30 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions):
+def ocr_image_trocr(image):
     """
-    강조된 영역에서 텍스트를 추출하는 함수 (PaddleOCR 사용)
+    trOCR을 사용하여 이미지에서 텍스트를 추출하는 함수
+    """
+    try:
+        # trOCR은 PIL Image 형식을 필요로 합니다.
+        pil_image = Image.fromarray(image)
+
+        # 프로세서를 사용하여 입력 준비
+        pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values
+        pixel_values = pixel_values.to(device)
+
+        # 모델을 사용하여 생성
+        generated_ids = model.generate(pixel_values)
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        return generated_text.strip()
+    except Exception as e:
+        print(f"Exception in ocr_image_trocr: {e}")
+        return ""
+
+def extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions):
+    """
+    강조된 영역에서 텍스트를 추출하는 함수 (trOCR 사용)
     """
     doc = fitz.open(pdf_path)
     page = doc.load_page(page_number - 1)  # 0-based index
@@ -172,15 +175,8 @@ def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
                     txt_file.write(f"Region {idx}: \n")
                     continue
 
-                # OCR 수행
-                ocr_result = ocr.ocr(preprocessed_img, rec=True, cls=True)
-
-                # 텍스트 추출
-                ocr_text = ""
-                for line in ocr_result:
-                    ocr_text += line[1][0] + " "
-
-                ocr_text = ocr_text.strip()
+                # OCR 수행 (trOCR 사용)
+                ocr_text = ocr_image_trocr(preprocessed_img)
 
                 if DEBUG_MODE:
                     print(f"OCR Text from region {idx}: {ocr_text}")
@@ -311,8 +307,8 @@ def main(pdf_path, output_excel_path):
         print("추출된 표가 없습니다.")
         return
 
-    # PaddleOCR을 통해 강조된 텍스트 추출
-    extracted_texts = extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
+    # trOCR을 통해 강조된 텍스트 추출
+    extracted_texts = extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions)
 
     # 추출된 표 처리
     processed_df = process_tables(tables, highlight_regions, image.shape[0])
