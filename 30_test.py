@@ -14,15 +14,13 @@ import torch
 # 디버그 모드 설정
 DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
-PREPROCESSED_OUTPUT_DIR = "/workspaces/automation/output/preprocessed_images"  # 전처리된 이미지 저장 디렉토리
 TXT_OUTPUT_DIR = "/workspaces/automation/output/texts"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
-os.makedirs(PREPROCESSED_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
 
-# trOCR 모델과 프로세서 초기화
-processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten')
-model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten')
+# trOCR 모델과 프로세서 초기화 (Printed 모델 사용)
+processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed')
+model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
@@ -30,45 +28,6 @@ def pdf_to_image(page):
     pix = page.get_pixmap()
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return np.array(img)
-
-def preprocess_image_for_ocr(image, idx, page_number):
-    """
-    이미지 전처리 함수:
-    1. 그레이스케일 변환
-    2. Adaptive Thresholding을 사용하여 이진화
-    3. 팽창(Dilation) 또는 침식(Erosion) 적용
-    4. 윤곽(Contours) 감지 및 강조
-    5. 전처리된 이미지 저장
-    """
-    try:
-        # 원본 이미지 저장 (디버깅용)
-        original_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'original_highlight_{page_number}_{idx}.png')
-        Image.fromarray(image).save(original_img_path)
-
-        # 1. 그레이스케일 변환
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-        # 2. Adaptive Thresholding을 사용하여 이진화
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                       cv2.THRESH_BINARY, 31, 2)
-
-        # 3. 팽창(Dilation) 또는 침식(Erosion) 적용
-        kernel = np.ones((3,3), np.uint8)
-        processed = cv2.dilate(thresh, kernel, iterations=1)  # 팽창 적용
-
-        # 4. 윤곽(Contours) 감지 및 강조
-        contours, _ = cv2.findContours(processed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contour_image = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-        cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 1)
-
-        # 5. 전처리된 이미지 저장 (디버깅용)
-        preprocessed_img_path = os.path.join(PREPROCESSED_OUTPUT_DIR, f'preprocessed_highlight_{page_number}_{idx}.png')
-        Image.fromarray(contour_image).save(preprocessed_img_path)
-
-        return processed
-    except Exception as e:
-        print(f"Exception in preprocess_image_for_ocr for region {idx}: {e}")
-        return None
 
 def detect_highlights(image, page_num):
     """
@@ -168,15 +127,8 @@ def extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions):
                 cropped_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'highlight_{page_number}_{idx}.png')
                 cropped_img.save(cropped_img_path)
 
-                # 이미지 전처리
-                preprocessed_img = preprocess_image_for_ocr(np.array(cropped_img), idx, page_number)
-                if preprocessed_img is None:
-                    extracted_texts.append('')
-                    txt_file.write(f"Region {idx}: \n")
-                    continue
-
                 # OCR 수행 (trOCR 사용)
-                ocr_text = ocr_image_trocr(preprocessed_img)
+                ocr_text = ocr_image_trocr(np.array(cropped_img))
 
                 if DEBUG_MODE:
                     print(f"OCR Text from region {idx}: {ocr_text}")
