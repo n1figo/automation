@@ -13,8 +13,10 @@ from fuzzywuzzy import fuzz
 # 디버그 모드 설정
 DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
+PREPROCESSED_OUTPUT_DIR = "/workspaces/automation/output/preprocessed_images"  # 전처리된 이미지 저장 디렉토리 추가
 TXT_OUTPUT_DIR = "/workspaces/automation/output/texts"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+os.makedirs(PREPROCESSED_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
 
 # PaddleOCR 모델 초기화 (한국어 지원)
@@ -124,6 +126,10 @@ def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
 
                 # 이미지 전처리
                 preprocessed_img = preprocess_image_for_ocr(np.array(cropped_img))
+
+                # 전처리된 이미지 저장 (디버깅용)
+                preprocessed_img_path = os.path.join(PREPROCESSED_OUTPUT_DIR, f'preprocessed_highlight_{page_number}_{idx}.png')
+                preprocessed_img.save(preprocessed_img_path)
 
                 # OCR 수행
                 ocr_result = ocr.ocr(np.array(preprocessed_img), rec=True, cls=True)
