@@ -8,8 +8,10 @@ from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from fuzzywuzzy import fuzz
-from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-import torch
+import pytesseract  # Tesseract OCR 라이브러리
+
+# Tesseract 실행 파일 경로 설정 (필요 시)
+# 예: pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # 디버그 모드 설정
 DEBUG_MODE = True
@@ -17,12 +19,6 @@ IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 TXT_OUTPUT_DIR = "/workspaces/automation/output/texts"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
-
-# trOCR 모델과 프로세서 초기화 (Printed 모델 사용)
-processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed')
-model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed')
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
@@ -80,30 +76,33 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def ocr_image_trocr(image):
+def ocr_image_tesseract(image):
     """
-    trOCR을 사용하여 이미지에서 텍스트를 추출하는 함수
+    Tesseract를 사용하여 이미지에서 한글 텍스트를 추출하는 함수
     """
     try:
-        # trOCR은 PIL Image 형식을 필요로 합니다.
-        pil_image = Image.fromarray(image)
+        # 이미지 전처리: 그레이스케일 변환 및 이진화
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # 노이즈 제거
+        gray = cv2.medianBlur(gray, 3)
+        # 이진화 (Thresholding)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        # 프로세서를 사용하여 입력 준비
-        pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values
-        pixel_values = pixel_values.to(device)
+        # PIL 이미지로 변환
+        pil_image = Image.fromarray(thresh)
 
-        # 모델을 사용하여 생성
-        generated_ids = model.generate(pixel_values)
-        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        # Tesseract OCR 수행 (한글 언어 설정: 'kor')
+        ocr_text = pytesseract.image_to_string(pil_image, lang='kor')
 
-        return generated_text.strip()
+        return ocr_text.strip()
+
     except Exception as e:
-        print(f"Exception in ocr_image_trocr: {e}")
+        print(f"OCR 처리 중 오류 발생: {e}")
         return ""
 
-def extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions):
+def extract_highlighted_text_tesseract(pdf_path, page_number, highlight_regions):
     """
-    강조된 영역에서 텍스트를 추출하는 함수 (trOCR 사용)
+    강조된 영역에서 텍스트를 추출하는 함수 (Tesseract 사용)
     """
     doc = fitz.open(pdf_path)
     page = doc.load_page(page_number - 1)  # 0-based index
@@ -127,8 +126,8 @@ def extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions):
                 cropped_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'highlight_{page_number}_{idx}.png')
                 cropped_img.save(cropped_img_path)
 
-                # OCR 수행 (trOCR 사용)
-                ocr_text = ocr_image_trocr(np.array(cropped_img))
+                # OCR 수행 (Tesseract 사용)
+                ocr_text = ocr_image_tesseract(np.array(cropped_img))
 
                 if DEBUG_MODE:
                     print(f"OCR Text from region {idx}: {ocr_text}")
@@ -259,8 +258,8 @@ def main(pdf_path, output_excel_path):
         print("추출된 표가 없습니다.")
         return
 
-    # trOCR을 통해 강조된 텍스트 추출
-    extracted_texts = extract_highlighted_text_trocr(pdf_path, page_number, highlight_regions)
+    # Tesseract를 통해 강조된 텍스트 추출
+    extracted_texts = extract_highlighted_text_tesseract(pdf_path, page_number, highlight_regions)
 
     # 추출된 표 처리
     processed_df = process_tables(tables, highlight_regions, image.shape[0])
