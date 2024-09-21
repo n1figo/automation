@@ -3,15 +3,21 @@ import pandas as pd
 import numpy as np
 import cv2
 import os
-import fitz  # PyMuPDF
+import fitz
 from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-import pytesseract
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+import torch
+from difflib import SequenceMatcher
 
 DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+
+# TROCR 모델 및 프로세서 초기화
+processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
+model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
@@ -51,25 +57,8 @@ def get_highlight_regions(contours, image_height):
         # OpenCV 좌표계를 PDF 좌표계로 변환
         top = image_height - (y + h)
         bottom = image_height - y
-        regions.append((top, bottom, x, y, w, h))  # 좌표와 크기도 저장
+        regions.append((x, top, x+w, bottom))
     return regions
-
-def extract_highlighted_texts(pdf_path, page_number, highlight_regions):
-    doc = fitz.open(pdf_path)
-    page = doc.load_page(page_number - 1)  # 0-based index
-    highlighted_texts = []
-    
-    for region in highlight_regions:
-        top, bottom, x, y, w, h = region
-        # PyMuPDF에서 사각형을 정의할 때는 (x0, y0, x1, y1)
-        rect = fitz.Rect(x, top, x + w, bottom)
-        words = page.get_text("words", clip=rect)  # 리스트 of (x0, y0, x1, y1, "word", block_no, line_no, word_no)
-        words_sorted = sorted(words, key=lambda w: (w[1], w[0]))  # y0, x0 순으로 정렬
-        line_text = " ".join([w[4] for w in words_sorted])
-        if line_text.strip():  # 비어있지 않은 경우
-            highlighted_texts.append(line_text.strip())
-    
-    return highlighted_texts
 
 def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Extracting tables from page {page_number} using Camelot...")
@@ -77,7 +66,7 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def process_tables(tables, highlighted_texts):
+def process_tables(tables, highlight_regions, page_height):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df
@@ -89,23 +78,30 @@ def process_tables(tables, highlighted_texts):
 
         for row_index in range(len(df)):
             row_data = df.iloc[row_index].copy()
-
+            
             # 행의 상단과 하단 y 좌표 계산 (PDF 좌표계 사용)
             # 상단부터 계산하기 위해 y2에서부터 감소
             row_top = y2 - (row_index + 1) * row_height
             row_bottom = y2 - row_index * row_height
-
-            # 행의 전체 텍스트 추출
-            row_text = " ".join(row_data.astype(str).tolist())
-
-            # 강조된 텍스트가 행의 텍스트에 포함되는지 확인
-            row_highlighted = any(high_text in row_text for high_text in highlighted_texts)
-
+            
+            row_highlighted = check_highlight((x1, row_top, x2, row_bottom), highlight_regions)
             row_data["변경사항"] = "추가" if row_highlighted else ""
             row_data["Table_Number"] = i + 1
             processed_data.append(row_data)
 
     return pd.DataFrame(processed_data)
+
+def check_highlight(row_range, highlight_regions):
+    x1, row_top, x2, row_bottom = row_range
+    for region_x1, region_top, region_x2, region_bottom in highlight_regions:
+        # 행과 강조 영역이 겹치는지 확인
+        if (region_x1 < x2 and region_x2 > x1 and
+            ((region_top <= row_top <= region_bottom) or 
+             (region_top <= row_bottom <= region_bottom) or
+             (row_top <= region_top <= row_bottom) or 
+             (row_top <= region_bottom <= row_bottom))):
+            return True
+    return False
 
 def save_to_excel_with_highlight(df, output_path):
     df.to_excel(output_path, index=False)
@@ -129,6 +125,33 @@ def save_to_excel_with_highlight(df, output_path):
     wb.save(output_path)
     print(f"Data saved to '{output_path}' with highlighted rows")
 
+def read_text_with_trocr(image, region):
+    x1, y1, x2, y2 = region
+    cropped_image = image[y1:y2, x1:x2]
+    cropped_image = Image.fromarray(cropped_image)
+    
+    pixel_values = processor(images=cropped_image, return_tensors="pt").pixel_values
+    generated_ids = model.generate(pixel_values)
+    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    
+    return generated_text
+
+def compare_and_update_excel(df, highlight_texts, output_path):
+    for i, row in df.iterrows():
+        if row['변경사항'] == '추가':
+            row_text = ' '.join(row.astype(str))
+            max_similarity = 0
+            for highlight_text in highlight_texts:
+                similarity = SequenceMatcher(None, row_text, highlight_text).ratio()
+                max_similarity = max(max_similarity, similarity)
+            
+            if max_similarity < 0.5:  # 유사성 임계값 설정
+                print(f"유사성이 낮은 행: {row}")
+                df.at[i, '변경사항'] = ''
+
+    save_to_excel_with_highlight(df, output_path)
+    print(f"Updated data saved to '{output_path}'")
+
 def main(pdf_path, output_excel_path):
     print("PDF에서 개정된 부분을 추출합니다...")
 
@@ -144,14 +167,20 @@ def main(pdf_path, output_excel_path):
     highlight_regions = get_highlight_regions(contours, image.shape[0])
 
     highlighted_image = image.copy()
-    for region in highlight_regions:
-        top, bottom, x, y, w, h = region
+    for x1, top, x2, bottom in highlight_regions:
         # PDF 좌표계를 OpenCV 좌표계로 변환하여 그리기
-        cv2.rectangle(highlighted_image, (x, image.shape[0] - bottom), (x + w, image.shape[0] - top), (0, 255, 0), 2)
+        cv2.rectangle(highlighted_image, (x1, image.shape[0] - bottom), (x2, image.shape[0] - top), (0, 255, 0), 2)
     cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'), cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
 
     print(f"감지된 강조 영역 수: {len(highlight_regions)}")
     print(f"강조 영역: {highlight_regions}")
+
+    # TROCR을 사용하여 강조 영역의 텍스트 읽기
+    highlight_texts = []
+    for region in highlight_regions:
+        text = read_text_with_trocr(image, (region[0], image.shape[0] - region[3], region[2], image.shape[0] - region[1]))
+        highlight_texts.append(text)
+        print(f"강조 영역 텍스트: {text}")
 
     # Camelot을 사용하여 표 추출
     tables = extract_tables_with_camelot(pdf_path, page_number + 1)
@@ -160,16 +189,15 @@ def main(pdf_path, output_excel_path):
         print("추출된 표가 없습니다.")
         return
 
-    # 강조된 텍스트 추출
-    highlighted_texts = extract_highlighted_texts(pdf_path, page_number + 1, highlight_regions)
-    print(f"추출된 강조된 텍스트: {highlighted_texts}")
-
     # 추출된 표 처리
-    processed_df = process_tables(tables, highlighted_texts)
+    processed_df = process_tables(tables, highlight_regions, image.shape[0])
 
     print(processed_df)
 
     save_to_excel_with_highlight(processed_df, output_excel_path)
+
+    # TROCR 결과를 기반으로 엑셀 파일 업데이트
+    compare_and_update_excel(processed_df, highlight_texts, output_excel_path)
 
     print(f"처리된 데이터가 {output_excel_path}에 저장되었습니다.")
 
