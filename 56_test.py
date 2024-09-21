@@ -1,61 +1,92 @@
-import camelot
+import fitz
 import pandas as pd
 import numpy as np
-import cv2
 import os
-import fitz
 from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+from sklearn.cluster import KMeans
+from collections import Counter
+import camelot
 
 DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
-def pdf_to_image(page):
-    pix = page.get_pixmap()
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    return np.array(img)
+def is_highlight_color(color, threshold=0.8):
+    if isinstance(color, (int, float)):  # 단일 값인 경우 (회색조)
+        return color > threshold * 255
+    elif len(color) == 3:  # RGB
+        r, g, b = color
+        return (r > threshold * 255 and g > threshold * 255) or \
+               (r > threshold * 255 and b > threshold * 255) or \
+               (g > threshold * 255 and b > threshold * 255)
+    elif len(color) == 4:  # CMYK
+        c, m, y, k = color
+        return c < 0.1 and m < 0.1 and y > 0.5 and k < 0.1
+    return False
 
-def detect_highlights(image, page_num):
-    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+def detect_highlights_pymupdf(page):
+    highlight_areas = []
+    words = page.get_text("words")
+    for word in words:
+        if len(word) >= 5:  # 색상 정보가 있는지 확인
+            bbox = fitz.Rect(word[:4])
+            color = word[4] if isinstance(word[4], (int, float, tuple)) else None
+            if color and is_highlight_color(color):
+                highlight_areas.append(bbox)
+    return highlight_areas
+
+def detect_highlights_pillow(image_path):
+    image = Image.open(image_path)
+    pixels = list(image.getdata())
     
-    # 흰색과 회색을 제외한 모든 색상 마스크 생성
-    lower_color = np.array([0, 20, 20])
-    upper_color = np.array([180, 255, 255])
-    color_mask = cv2.inRange(hsv, lower_color, upper_color)
+    # Use K-means clustering to find dominant colors
+    kmeans = KMeans(n_clusters=5)
+    kmeans.fit(pixels)
     
-    # 글자색 변경 감지 (검정색이 아닌 글자)
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    text_mask = cv2.bitwise_and(binary, binary, mask=cv2.bitwise_not(color_mask))
+    # Count occurrences of each color
+    color_counts = Counter(kmeans.labels_)
     
-    # 색상 마스크와 글자 마스크 결합
-    combined_mask = cv2.bitwise_or(color_mask, text_mask)
+    # Find highlight colors
+    highlight_colors = [kmeans.cluster_centers_[i] for i, count in color_counts.items() 
+                        if is_highlight_color(kmeans.cluster_centers_[i]) and count > len(pixels) * 0.01]
     
-    kernel = np.ones((5,5), np.uint8)
-    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+    # Create a mask for highlight colors
+    highlight_mask = Image.new('1', image.size, 0)
+    for y in range(image.height):
+        for x in range(image.width):
+            pixel = image.getpixel((x, y))
+            if any(np.allclose(pixel, color, atol=10) for color in highlight_colors):
+                highlight_mask.putpixel((x, y), 1)
+    
+    # Find contours in the mask
+    highlight_areas = []
+    for y in range(image.height):
+        for x in range(image.width):
+            if highlight_mask.getpixel((x, y)) == 1:
+                highlight_areas.append((x, y, x+1, y+1))
+    
+    return highlight_areas
 
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
-
-    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    contour_image = image.copy()
-    cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_contours.png'), cv2.cvtColor(contour_image, cv2.COLOR_RGB2BGR))
-
-    return contours
-
-def get_highlight_regions(contours, image_height):
-    regions = []
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        # OpenCV 좌표계를 PDF 좌표계로 변환
-        top = image_height - (y + h)
-        bottom = image_height - y
-        regions.append((top, bottom))
-    return regions
+def combine_highlight_areas(areas1, areas2):
+    combined = areas1 + areas2
+    # Merge overlapping areas
+    merged = []
+    for area in combined:
+        if not merged:
+            merged.append(area)
+        else:
+            overlap = False
+            for i, existing in enumerate(merged):
+                if check_overlap(area, existing):
+                    merged[i] = (min(area[0], existing[0]), min(area[1], existing[1]),
+                                 max(area[2], existing[2]), max(area[3], existing[3]))
+                    overlap = True
+                    break
+            if not overlap:
+                merged.append(area)
+    return merged
 
 def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Extracting tables from page {page_number} using Camelot...")
@@ -63,33 +94,25 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def process_tables(tables, highlight_regions, page_height):
+def process_tables(tables, highlight_areas):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df
-        y1, x1, y2, x2 = table._bbox
-        
         for row_index in range(len(df)):
             row_data = df.iloc[row_index].copy()
-            
-            # 행의 상단과 하단 y 좌표 계산 (PDF 좌표계 사용)
-            row_top = y2 - (row_index + 1) * (y2 - y1) / len(df)
-            row_bottom = y2 - row_index * (y2 - y1) / len(df)
-            
-            row_highlighted = check_highlight((row_top, row_bottom), highlight_regions)
+            row_bbox = table.cells[row_index][0].bbox
+            row_highlighted = any(check_overlap(row_bbox, area) for area in highlight_areas)
             row_data["변경사항"] = "추가" if row_highlighted else ""
             row_data["Table_Number"] = i + 1
             processed_data.append(row_data)
-
     return pd.DataFrame(processed_data)
 
-def check_highlight(row_range, highlight_regions):
-    row_top, row_bottom = row_range
-    for region_top, region_bottom in highlight_regions:
-        if (region_top <= row_top <= region_bottom) or (region_top <= row_bottom <= region_bottom) or \
-           (row_top <= region_top <= row_bottom) or (row_top <= region_bottom <= row_bottom):
-            return True
-    return False
+def check_overlap(bbox1, bbox2):
+    x1 = max(bbox1[0], bbox2[0])
+    y1 = max(bbox1[1], bbox2[1])
+    x2 = min(bbox1[2], bbox2[2])
+    y2 = min(bbox1[3], bbox2[3])
+    return x1 < x2 and y1 < y2
 
 def save_to_excel_with_highlight(df, output_path):
     df.to_excel(output_path, index=False)
@@ -114,29 +137,36 @@ def main(pdf_path, output_excel_path):
 
     doc = fitz.open(pdf_path)
     page_number = 50  # 51페이지 (0-based index)
-
     page = doc[page_number]
-    image = pdf_to_image(page)
 
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_original.png'), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    # PyMuPDF를 사용한 하이라이트 감지
+    highlight_areas_pymupdf = detect_highlights_pymupdf(page)
 
-    contours = detect_highlights(image, page_number + 1)
-    highlight_regions = get_highlight_regions(contours, image.shape[0])
+    # 이미지로 변환 후 Pillow를 사용한 하이라이트 감지
+    pix = page.get_pixmap()
+    img_path = os.path.join(IMAGE_OUTPUT_DIR, f"page_{page_number + 1}.png")
+    pix.save(img_path)
+    highlight_areas_pillow = detect_highlights_pillow(img_path)
 
-    highlighted_image = image.copy()
-    for top, bottom in highlight_regions:
-        # PDF 좌표계를 OpenCV 좌표계로 변환하여 그리기
-        cv2.rectangle(highlighted_image, (0, image.shape[0] - bottom), (image.shape[1], image.shape[0] - top), (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'), cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
+    # 두 방법의 결과 합치기
+    highlight_areas = combine_highlight_areas(highlight_areas_pymupdf, highlight_areas_pillow)
 
-    print(f"감지된 강조 영역 수: {len(highlight_regions)}")
-    print(f"강조 영역: {highlight_regions}")
+    print(f"감지된 강조 영역 수: {len(highlight_areas)}")
+
+    # 디버깅: 강조 영역 시각화
+    img = Image.open(img_path)
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    for area in highlight_areas:
+        overlay_draw = Image.new('RGBA', (int(area[2]-area[0]), int(area[3]-area[1])), (255, 0, 0, 128))
+        overlay.paste(overlay_draw, (int(area[0]), int(area[1])))
+    img = Image.alpha_composite(img.convert('RGBA'), overlay)
+    img.save(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_number + 1}_highlighted.png'))
 
     # Camelot을 사용하여 표 추출
     tables = extract_tables_with_camelot(pdf_path, page_number + 1)
 
     # 추출된 표 처리
-    processed_df = process_tables(tables, highlight_regions, image.shape[0])
+    processed_df = process_tables(tables, highlight_areas)
 
     print(processed_df)
 
