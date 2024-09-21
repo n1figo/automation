@@ -63,15 +63,19 @@ def process_tables(tables, highlight_regions, page_height):
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df
-        x1, y1, x2, y2 = table._bbox  # 수정된 부분: 올바른 좌표 언패킹
+        x1, y1, x2, y2 = table._bbox  # 올바른 좌표 언패킹
+
+        # PDF 좌표계에서 y1은 하단, y2는 상단
+        table_height = y2 - y1
+        row_height = table_height / len(df)
 
         for row_index in range(len(df)):
             row_data = df.iloc[row_index].copy()
             
             # 행의 상단과 하단 y 좌표 계산 (PDF 좌표계 사용)
-            row_height = (y2 - y1) / len(df)
-            row_top = y1 + row_index * row_height
-            row_bottom = y1 + (row_index + 1) * row_height
+            # 상단부터 계산하기 위해 y2에서부터 감소
+            row_top = y2 - (row_index + 1) * row_height
+            row_bottom = y2 - row_index * row_height
             
             row_highlighted = check_highlight((row_top, row_bottom), highlight_regions)
             row_data["변경사항"] = "추가" if row_highlighted else ""
@@ -83,6 +87,7 @@ def process_tables(tables, highlight_regions, page_height):
 def check_highlight(row_range, highlight_regions):
     row_top, row_bottom = row_range
     for region_top, region_bottom in highlight_regions:
+        # 행과 강조 영역이 겹치는지 확인
         if (region_top <= row_top <= region_bottom) or (region_top <= row_bottom <= region_bottom) or \
            (row_top <= region_top <= row_bottom) or (row_top <= region_bottom <= row_bottom):
             return True
