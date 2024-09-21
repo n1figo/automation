@@ -8,10 +8,10 @@ from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from fuzzywuzzy import fuzz
-import pytesseract  # Tesseract OCR 라이브러리
+import easyocr  # EasyOCR 라이브러리
 
-# Tesseract 실행 파일 경로 설정 (필요 시)
-# 예: pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# EasyOCR 리더 초기화 (한국어 지원)
+reader = easyocr.Reader(['ko'])  # 첫 실행 시 모델 다운로드
 
 # 디버그 모드 설정
 DEBUG_MODE = True
@@ -30,23 +30,20 @@ def detect_highlights(image, page_num):
     강조색(하이라이트) 영역을 감지하고 컨투어를 반환하는 함수
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-    s = hsv[:,:,1]
-    v = hsv[:,:,2]
+    
+    # 노란색 하이라이트 감지를 위한 HSV 범위 설정
+    lower_yellow = np.array([20, 100, 100])
+    upper_yellow = np.array([30, 255, 255])
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
-    saturation_threshold = 30
-    saturation_mask = s > saturation_threshold
+    # Morphological operations to clean up the mask
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
 
-    _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), mask)
 
-    combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
-
-    kernel = np.ones((5,5), np.uint8)
-    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
-
-    cv2.imwrite(os.path.join(IMAGE_OUTPUT_DIR, f'page_{page_num}_mask.png'), cleaned_mask)
-
-    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     contour_image = image.copy()
     cv2.drawContours(contour_image, contours, -1, (0, 255, 0), 2)
@@ -76,33 +73,50 @@ def extract_tables_with_camelot(pdf_path, page_number):
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
-def ocr_image_tesseract(image):
+def ocr_image_easyocr(image):
     """
-    Tesseract를 사용하여 이미지에서 한글 텍스트를 추출하는 함수
+    EasyOCR을 사용하여 이미지에서 한글 텍스트를 추출하는 함수
     """
     try:
-        # 이미지 전처리: 그레이스케일 변환 및 이진화
+        # 이미지 전처리: 그레이스케일 변환
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        # 노이즈 제거
+        
+        # 노이즈 제거 (Median Blur)
         gray = cv2.medianBlur(gray, 3)
-        # 이진화 (Thresholding)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # PIL 이미지로 변환
-        pil_image = Image.fromarray(thresh)
-
-        # Tesseract OCR 수행 (한글 언어 설정: 'kor')
-        ocr_text = pytesseract.image_to_string(pil_image, lang='kor')
-
+        
+        # 대비 향상
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        
+        # 이진화 (Adaptive Thresholding)
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       cv2.THRESH_BINARY, 31, 2)
+        
+        # 기울기 보정 (Deskewing)
+        coords = np.column_stack(np.where(thresh > 0))
+        angle = cv2.minAreaRect(coords)[-1]
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+        (h, w) = thresh.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        thresh = cv2.warpAffine(thresh, M, (w, h),
+                                flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        
+        # OCR 수행 (EasyOCR 사용)
+        results = reader.readtext(thresh, detail=0, paragraph=True)
+        ocr_text = ' '.join(results)
+        
         return ocr_text.strip()
-
     except Exception as e:
         print(f"OCR 처리 중 오류 발생: {e}")
         return ""
 
-def extract_highlighted_text_tesseract(pdf_path, page_number, highlight_regions):
+def extract_highlighted_text_easyocr(pdf_path, page_number, highlight_regions):
     """
-    강조된 영역에서 텍스트를 추출하는 함수 (Tesseract 사용)
+    강조된 영역에서 텍스트를 추출하는 함수 (EasyOCR 사용)
     """
     doc = fitz.open(pdf_path)
     page = doc.load_page(page_number - 1)  # 0-based index
@@ -123,11 +137,11 @@ def extract_highlighted_text_tesseract(pdf_path, page_number, highlight_regions)
 
                 # 영역 크롭
                 cropped_img = img.crop((x0, y0, x1, y1))
-                cropped_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'highlight_{page_number}_{idx}.png')
+                cropped_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'highlight_{page_number}_{idx}_cropped.png')
                 cropped_img.save(cropped_img_path)
 
-                # OCR 수행 (Tesseract 사용)
-                ocr_text = ocr_image_tesseract(np.array(cropped_img))
+                # OCR 수행 (EasyOCR 사용)
+                ocr_text = ocr_image_easyocr(np.array(cropped_img))
 
                 if DEBUG_MODE:
                     print(f"OCR Text from region {idx}: {ocr_text}")
@@ -228,7 +242,7 @@ def save_to_excel_with_highlight(df, output_path):
     wb.save(output_path)
     print(f"Data saved to '{output_path}' with highlighted rows")
 
-def main(pdf_path, output_excel_path):
+def main(pdf_path, output_excel_path, use_easyocr=False):
     print("PDF에서 개정된 부분을 추출합니다...")
 
     doc = fitz.open(pdf_path)
@@ -258,8 +272,13 @@ def main(pdf_path, output_excel_path):
         print("추출된 표가 없습니다.")
         return
 
-    # Tesseract를 통해 강조된 텍스트 추출
-    extracted_texts = extract_highlighted_text_tesseract(pdf_path, page_number, highlight_regions)
+    # OCR 방식 선택
+    if use_easyocr:
+        # EasyOCR을 통해 강조된 텍스트 추출
+        extracted_texts = extract_highlighted_text_easyocr(pdf_path, page_number, highlight_regions)
+    else:
+        # Tesseract를 통해 강조된 텍스트 추출
+        extracted_texts = extract_highlighted_text_tesseract(pdf_path, page_number, highlight_regions)
 
     # 추출된 표 처리
     processed_df = process_tables(tables, highlight_regions, image.shape[0])
@@ -275,4 +294,5 @@ def main(pdf_path, output_excel_path):
 if __name__ == "__main__":
     pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
     output_excel_path = "/workspaces/automation/output/extracted_tables_camelot.xlsx"
-    main(pdf_path, output_excel_path)
+    # OCR 방식을 변경하려면 use_easyocr=True로 설정
+    main(pdf_path, output_excel_path, use_easyocr=False)
