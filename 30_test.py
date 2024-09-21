@@ -13,7 +13,7 @@ from fuzzywuzzy import fuzz
 # 디버그 모드 설정
 DEBUG_MODE = True
 IMAGE_OUTPUT_DIR = "/workspaces/automation/output/images"
-PREPROCESSED_OUTPUT_DIR = "/workspaces/automation/output/preprocessed_images"  # 전처리된 이미지 저장 디렉토리 추가
+PREPROCESSED_OUTPUT_DIR = "/workspaces/automation/output/preprocessed_images"  # 전처리된 이미지 저장 디렉토리
 TXT_OUTPUT_DIR = "/workspaces/automation/output/texts"
 os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(PREPROCESSED_OUTPUT_DIR, exist_ok=True)
@@ -27,40 +27,71 @@ def pdf_to_image(page):
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return np.array(img)
 
-def preprocess_image_for_ocr(image):
-    # 그레이스케일 변환
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+def preprocess_image_for_ocr(image, idx, page_number):
+    """
+    이미지 전처리 함수:
+    - 강조색 제거 (Inpainting)
+    - 대비 향상 (CLAHE)
+    - 샤프닝 필터 적용
+    - 노이즈 제거 (Median Blur)
+    - Adaptive Thresholding 적용
+    - 해상도 증가 (2배)
+    """
+    try:
+        # 원본 이미지 저장 (디버깅용)
+        original_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'original_highlight_{page_number}_{idx}.png')
+        Image.fromarray(image).save(original_img_path)
 
-    # HSV 색상 공간으로 변환
-    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        # 그레이스케일 변환
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
-    # 강조색(예: 노란색)의 HSV 범위 설정 (조정 필요)
-    lower_yellow = np.array([20, 100, 100])
-    upper_yellow = np.array([30, 255, 255])
+        # HSV 색상 공간으로 변환
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
 
-    # 강조색 마스크 생성
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        # 강조색(예: 노란색)의 HSV 범위 설정 (실제 하이라이트 색상에 따라 조정 필요)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
 
-    # 강조색 제거 (마스크 반전 후 비트 연산)
-    mask_inv = cv2.bitwise_not(mask)
-    text_only = cv2.bitwise_and(gray, gray, mask=mask_inv)
+        # 강조색 마스크 생성
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
-    # 대비 향상
-    text_only = cv2.equalizeHist(text_only)
+        # Inpainting을 사용하여 강조색 제거
+        # inpaint 메소드에는 2가지 알고리즘이 있다: cv2.INPAINT_TELEA, cv2.INPAINT_NS
+        inpainted = cv2.inpaint(gray, mask, 3, cv2.INPAINT_TELEA)
 
-    # 노이즈 제거 (Median Blur)
-    text_only = cv2.medianBlur(text_only, 3)
+        # 대비 향상 (CLAHE)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        inpainted = clahe.apply(inpainted)
 
-    # 이진화 (Adaptive Threshold 사용)
-    thresh = cv2.adaptiveThreshold(text_only, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY, 31, 2)
+        # 샤프닝 필터 적용
+        kernel_sharpen = np.array([[0, -1, 0],
+                                    [-1, 5,-1],
+                                    [0, -1, 0]])
+        inpainted = cv2.filter2D(inpainted, -1, kernel_sharpen)
 
-    # 해상도 증가 (2배)
-    thresh = cv2.resize(thresh, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        # 노이즈 제거 (Median Blur)
+        inpainted = cv2.medianBlur(inpainted, 3)
 
-    return Image.fromarray(thresh)
+        # Adaptive Thresholding 적용
+        thresh = cv2.adaptiveThreshold(inpainted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                       cv2.THRESH_BINARY, 31, 2)
+
+        # 해상도 증가 (2배)
+        thresh = cv2.resize(thresh, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+
+        # 전처리된 이미지 저장 (디버깅용)
+        preprocessed_img_path = os.path.join(PREPROCESSED_OUTPUT_DIR, f'preprocessed_highlight_{page_number}_{idx}.png')
+        Image.fromarray(thresh).save(preprocessed_img_path)
+
+        return thresh
+    except Exception as e:
+        print(f"Exception in preprocess_image_for_ocr for region {idx}: {e}")
+        return None
 
 def detect_highlights(image, page_num):
+    """
+    강조색(하이라이트) 영역을 감지하고 컨투어를 반환하는 함수
+    """
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
     s = hsv[:,:,1]
     v = hsv[:,:,2]
@@ -87,22 +118,31 @@ def detect_highlights(image, page_num):
     return contours
 
 def get_highlight_regions(contours, image_height):
+    """
+    컨투어를 기반으로 강조된 영역의 좌표를 반환하는 함수
+    """
     regions = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         # OpenCV 좌표계를 PDF 좌표계로 변환
         top = image_height - (y + h)
         bottom = image_height - y
-        regions.append((top, bottom, x, x + w))  # x 좌표도 추가
+        regions.append((top, bottom, x, x + w))  # x 좌표도 포함
     return regions
 
 def extract_tables_with_camelot(pdf_path, page_number):
+    """
+    Camelot을 사용하여 PDF의 특정 페이지에서 테이블을 추출하는 함수
+    """
     print(f"Extracting tables from page {page_number} using Camelot...")
     tables = camelot.read_pdf(pdf_path, pages=str(page_number), flavor='lattice')
     print(f"Found {len(tables)} tables on page {page_number}")
     return tables
 
 def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions):
+    """
+    강조된 영역에서 텍스트를 추출하는 함수 (PaddleOCR 사용)
+    """
     doc = fitz.open(pdf_path)
     page = doc.load_page(page_number - 1)  # 0-based index
     pix = page.get_pixmap()
@@ -120,19 +160,20 @@ def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
                 x0 = left
                 x1 = right
 
+                # 영역 크롭
                 cropped_img = img.crop((x0, y0, x1, y1))
                 cropped_img_path = os.path.join(IMAGE_OUTPUT_DIR, f'highlight_{page_number}_{idx}.png')
                 cropped_img.save(cropped_img_path)
 
                 # 이미지 전처리
-                preprocessed_img = preprocess_image_for_ocr(np.array(cropped_img))
-
-                # 전처리된 이미지 저장 (디버깅용)
-                preprocessed_img_path = os.path.join(PREPROCESSED_OUTPUT_DIR, f'preprocessed_highlight_{page_number}_{idx}.png')
-                preprocessed_img.save(preprocessed_img_path)
+                preprocessed_img = preprocess_image_for_ocr(np.array(cropped_img), idx, page_number)
+                if preprocessed_img is None:
+                    extracted_texts.append('')
+                    txt_file.write(f"Region {idx}: \n")
+                    continue
 
                 # OCR 수행
-                ocr_result = ocr.ocr(np.array(preprocessed_img), rec=True, cls=True)
+                ocr_result = ocr.ocr(preprocessed_img, rec=True, cls=True)
 
                 # 텍스트 추출
                 ocr_text = ""
@@ -157,6 +198,9 @@ def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
     return extracted_texts
 
 def process_tables(tables, highlight_regions, page_height):
+    """
+    추출된 테이블을 처리하여 데이터프레임으로 반환하는 함수
+    """
     processed_data = []
     for i, table in enumerate(tables):
         df = table.df
@@ -182,6 +226,9 @@ def process_tables(tables, highlight_regions, page_height):
     return pd.DataFrame(processed_data)
 
 def check_highlight(row_range, highlight_regions):
+    """
+    특정 행이 강조된 영역과 겹치는지 확인하는 함수
+    """
     row_top, row_bottom, _, _ = row_range
     for region_top, region_bottom, _, _ in highlight_regions:
         # 행과 강조 영역이 겹치는지 확인
@@ -191,6 +238,9 @@ def check_highlight(row_range, highlight_regions):
     return False
 
 def match_highlighted_texts_with_table_fuzzy(highlighted_texts, table_df, threshold=80):
+    """
+    FuzzyWuzzy를 사용하여 OCR로 추출한 텍스트와 테이블 행을 유사도 기반으로 매칭하는 함수
+    """
     for ocr_text in highlighted_texts:
         if not ocr_text:
             continue
@@ -207,6 +257,9 @@ def match_highlighted_texts_with_table_fuzzy(highlighted_texts, table_df, thresh
     return table_df
 
 def save_to_excel_with_highlight(df, output_path):
+    """
+    데이터프레임을 엑셀 파일로 저장하고, '변경사항' 컬럼이 '추가'인 행을 노란색으로 강조하는 함수
+    """
     df.to_excel(output_path, index=False)
     
     wb = load_workbook(output_path)
