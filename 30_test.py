@@ -18,7 +18,7 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 os.makedirs(TXT_OUTPUT_DIR, exist_ok=True)
 
 # PaddleOCR 모델 초기화 (한국어 지원)
-ocr = PaddleOCR(use_angle_cls=True, lang='korean')  # 한국어 인식 설정
+ocr = PaddleOCR(use_angle_cls=True, lang='korean')  # lang='korean'으로 수정
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
@@ -28,12 +28,34 @@ def pdf_to_image(page):
 def preprocess_image_for_ocr(image):
     # 그레이스케일 변환
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    # HSV 색상 공간으로 변환
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+
+    # 강조색(예: 노란색)의 HSV 범위 설정 (조정 필요)
+    lower_yellow = np.array([20, 100, 100])
+    upper_yellow = np.array([30, 255, 255])
+
+    # 강조색 마스크 생성
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+    # 강조색 제거 (마스크 반전 후 비트 연산)
+    mask_inv = cv2.bitwise_not(mask)
+    text_only = cv2.bitwise_and(gray, gray, mask=mask_inv)
+
+    # 대비 향상
+    text_only = cv2.equalizeHist(text_only)
+
+    # 노이즈 제거 (Median Blur)
+    text_only = cv2.medianBlur(text_only, 3)
+
+    # 이진화 (Adaptive Threshold 사용)
+    thresh = cv2.adaptiveThreshold(text_only, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY, 31, 2)
+
     # 해상도 증가 (2배)
-    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-    # 가우시안 블러로 노이즈 제거
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    # 이진화 (Otsu의 이진화)
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    thresh = cv2.resize(thresh, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+
     return Image.fromarray(thresh)
 
 def detect_highlights(image, page_num):
@@ -103,7 +125,7 @@ def extract_highlighted_text_paddleocr(pdf_path, page_number, highlight_regions)
                 # 이미지 전처리
                 preprocessed_img = preprocess_image_for_ocr(np.array(cropped_img))
 
-                # PaddleOCR을 사용하여 OCR 수행
+                # OCR 수행
                 ocr_result = ocr.ocr(np.array(preprocessed_img), rec=True, cls=True)
 
                 # 텍스트 추출
