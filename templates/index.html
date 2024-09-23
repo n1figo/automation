@@ -2,55 +2,58 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>웹 페이지 캡처 및 PDF 처리</title>
+    <title>PDF 업로드 및 처리</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            line-height: 1.6;
-            padding: 20px;
-            max-width: 800px;
-            margin: 0 auto;
+            margin: 50px;
+            background-color: #f2f2f2;
         }
-        form {
-            background: #f4f4f4;
-            padding: 20px;
-            border-radius: 5px;
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 500px;
+            margin: auto;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
-        label {
-            display: block;
-            margin-bottom: 5px;
+        h2 {
+            text-align: center;
         }
-        input[type="text"], input[type="file"] {
+        input[type=file] {
             width: 100%;
-            padding: 8px;
-            margin-bottom: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
+            padding: 12px;
+            margin: 8px 0;
         }
-        input[type="submit"] {
-            background: #333;
-            color: #fff;
-            padding: 10px 15px;
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px;
             border: none;
+            width: 100%;
             border-radius: 4px;
             cursor: pointer;
+            font-size: 16px;
         }
-        input[type="submit"]:hover {
-            background: #555;
+        button:hover {
+            background-color: #45a049;
+        }
+        .alert {
+            color: red;
+            text-align: center;
         }
     </style>
 </head>
 <body>
-    <h1>웹 페이지 캡처 및 PDF 처리</h1>
-    <form action="/" method="post" enctype="multipart/form-data">
-        <label for="url">웹 페이지 URL:</label>
-        <input type="text" id="url" name="url" required>
-        
-        <label for="pdf_file">PDF 파일 (선택사항):</label>
-        <input type="file" id="pdf_file" name="file" accept=".pdf">
-        
-        <input type="submit" value="제출">
-    </form>
+    <div class="container">
+        <h2>PDF 파일 업로드</h2>
+        <form action="/upload/" enctype="multipart/form-data" method="post">
+            <input type="file" name="file" accept=".pdf" required>
+            <button type="submit">업로드 및 처리</button>
+        </form>
+        {% if message %}
+            <p class="alert">{{ message }}</p>
+        {% endif %}
+    </div>
 </body>
 </html>
