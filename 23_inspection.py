@@ -7,6 +7,7 @@ import logging
 import argparse
 import os
 from playwright.sync_api import sync_playwright
+from openpyxl import Workbook
 
 def ensure_inspection_upload_folder():
     folder_name = 'inspection upload'
@@ -146,8 +147,10 @@ def preprocess_text(text):
     text = re.sub(r'\s+', '', text)    # 공백 제거
     return text
 
-def compare_tables(soup, html_tables, pdf_sections, similarity_threshold):
+def compare_tables(html_tables, pdf_sections, similarity_threshold):
     total_mismatches = 0
+    results = []  # 엑셀 출력을 위한 데이터 저장 리스트
+    header_written = False  # 헤더가 작성되었는지 여부
 
     for title, table in html_tables:
         html_rows = table.find_all('tr')
@@ -157,31 +160,24 @@ def compare_tables(soup, html_tables, pdf_sections, similarity_threshold):
         logging.debug(f"'{title}' 테이블의 행 개수: {len(html_rows)}")
         logging.debug(f"'{title}' 섹션의 PDF 라인 수: {len(pdf_lines)}")
 
-        # 헤더 행 찾기 또는 생성
-        header_row = None
-        thead = table.find('thead')
-        if thead:
-            header_row = thead.find('tr')
+        # 헤더 추출
+        header_cells = []
+        first_row = html_rows[0]
+        th_cells = first_row.find_all('th')
+        if th_cells:
+            header_cells = [th.get_text(strip=True) for th in th_cells]
         else:
-            first_row = html_rows[0]
-            th_cells = first_row.find_all('th')
-            if th_cells:
-                header_row = first_row
-            else:
-                # 헤더가 없으면 생성
-                header_row = soup.new_tag('tr')
-                for _ in html_rows[0].find_all('td'):
-                    new_th = soup.new_tag('th')
-                    header_row.append(new_th)
-                table.insert(0, header_row)
-                html_rows.insert(0, header_row)
+            # th 셀이 없으면 첫 번째 행의 td 셀을 헤더로 사용
+            td_cells = first_row.find_all('td')
+            header_cells = [td.get_text(strip=True) for td in td_cells]
 
-        # '검수결과' 헤더 추가
-        new_th = soup.new_tag('th')
-        new_th.string = '검수결과'
-        header_row.append(new_th)
+        # '검수결과' 열 추가
+        if not header_written:
+            overall_header = ['제목'] + header_cells + ['검수결과']
+            header_written = True
 
-        for row_idx, tr in enumerate(html_rows[1:], start=1):  # 헤더를 제외하고 시작 인덱스를 1로 설정
+        # 데이터 수집
+        for row_idx, tr in enumerate(html_rows[1:], start=1):  # 헤더 행을 제외하고 시작
             html_cells = tr.find_all(['td', 'th'])
             html_line = ' '.join(tr.stripped_strings)
             is_matched = False
@@ -191,30 +187,32 @@ def compare_tables(soup, html_tables, pdf_sections, similarity_threshold):
                 if similarity >= similarity_threshold:
                     is_matched = True
                     break
+            검수결과 = ''
             if not is_matched:
                 total_mismatches += 1
-                # 각 셀을 검사하여 어떤 부분이 불일치하는지 확인
-                for cell in html_cells:
-                    cell_text = ' '.join(cell.stripped_strings)
-                    cell_matched = False
-                    for pdf_line in pdf_lines:
-                        cell_similarity = SequenceMatcher(None, preprocess_text(cell_text), preprocess_text(pdf_line)).ratio()
-                        if cell_similarity >= similarity_threshold:
-                            cell_matched = True
-                            break
-                    if not cell_matched:
-                        # 불일치하는 셀에 스타일 추가 (초록색 음영)
-                        cell['style'] = cell.get('style', '') + 'background-color: lightgreen;'
-                # 검수결과 열에 '불일치' 추가
-                new_td = soup.new_tag('td')
-                new_td.string = '불일치'
-                tr.append(new_td)
-            else:
-                # 검수결과 열에 빈 값 추가
-                new_td = soup.new_tag('td')
-                new_td.string = ''
-                tr.append(new_td)
-    return total_mismatches
+                검수결과 = '불일치'
+            # 셀 값 가져오기
+            cell_values = [cell.get_text(strip=True) for cell in html_cells]
+            # '검수결과' 값 추가
+            cell_values.append(검수결과)
+            # 제목 추가
+            row_data = [title] + cell_values
+            results.append(row_data)
+    return overall_header, results, total_mismatches
+
+def write_results_to_excel(header, data, output_path):
+    try:
+        wb = Workbook()
+        ws = wb.active
+        # 헤더 작성
+        ws.append(header)
+        # 데이터 작성
+        for row in data:
+            ws.append(row)
+        wb.save(output_path)
+        logging.info(f"검수 결과를 '{output_path}' 파일에 저장했습니다.")
+    except Exception as e:
+        logging.error(f"검수 결과를 엑셀 파일로 저장하는 데 실패했습니다: {e}")
 
 def main(similarity_threshold=0.95, log_level='INFO'):
     numeric_level = getattr(logging, log_level.upper(), None)
@@ -259,14 +257,11 @@ def main(similarity_threshold=0.95, log_level='INFO'):
         pdf_sections = extract_relevant_pdf_sections(pdf_path, section_titles)
 
         # 각 라인별로 비교
-        total_mismatches = compare_tables(soup, html_tables, pdf_sections, similarity_threshold)
+        header, results, total_mismatches = compare_tables(html_tables, pdf_sections, similarity_threshold)
 
-        # 수정된 HTML을 출력 폴더에 저장
-        output_html_path = os.path.join(output_folder_path, os.path.basename(html_path))
-
-        with open(output_html_path, 'w', encoding='utf-8') as file:
-            file.write(str(soup))
-        logging.info(f"수정된 HTML 파일을 '{output_html_path}'에 저장했습니다.")
+        # 결과를 엑셀 파일로 저장
+        output_excel_path = os.path.join(output_folder_path, '검수결과.xlsx')
+        write_results_to_excel(header, results, output_excel_path)
 
         if total_mismatches > 0:
             logging.warning(f"{total_mismatches}개의 불일치하는 행이 발견되었습니다.")
@@ -276,7 +271,7 @@ def main(similarity_threshold=0.95, log_level='INFO'):
         logging.error("'요약서' PDF 또는 '보장내용' HTML 파일을 찾을 수 없습니다.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PDF와 HTML 문서를 비교합니다.")
+    parser = argparse.ArgumentParser(description="PDF와 HTML 문서를 비교하여 검수 결과를 엑셀로 출력합니다.")
     parser.add_argument('--threshold', type=float, default=0.95, help="유사도 임계값 (기본값: 0.95)")
     parser.add_argument('--loglevel', default='INFO', help="로그 레벨 설정 (예: DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args()
