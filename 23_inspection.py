@@ -50,6 +50,7 @@ def find_files_in_folder(folder_path):
 
 def extract_html_content_with_playwright(html_path):
     try:
+        logging.info(f"Playwright를 사용하여 '{html_path}' 파일을 처리합니다.")
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context()
@@ -58,13 +59,14 @@ def extract_html_content_with_playwright(html_path):
             # mhtml 파일을 로드
             page.goto(f'file://{os.path.abspath(html_path)}')
 
-            # 페이지가 로드될 때까지 대기 (필요한 경우)
-            # page.wait_for_load_state('networkidle')
+            # 페이지가 로드될 때까지 대기
+            page.wait_for_load_state('networkidle')
 
             html_content = page.content()
             browser.close()
 
             soup = BeautifulSoup(html_content, 'html.parser')
+            logging.info(f"'{html_path}' 파일의 HTML 콘텐츠를 추출했습니다.")
             return soup
     except Exception as e:
         logging.error(f"Playwright를 사용하여 HTML 내용을 추출하는 데 실패했습니다: {e}")
@@ -81,6 +83,7 @@ def extract_html_content(html_path):
             with open(html_path, 'r', encoding='utf-8') as file:
                 html_content = file.read()
             soup = BeautifulSoup(html_content, 'html.parser')
+            logging.info(f"'{html_path}' 파일의 HTML 콘텐츠를 추출했습니다.")
             return soup
     except Exception as e:
         logging.error(f"HTML 내용을 추출하는 데 실패했습니다: {e}")
@@ -119,6 +122,7 @@ def extract_relevant_tables(soup):
 
 def extract_pdf_tables(pdf_path, pages='all'):
     try:
+        logging.info(f"'{pdf_path}' 파일에서 테이블을 추출합니다.")
         # Camelot을 사용하여 PDF에서 테이블 추출
         tables = camelot.read_pdf(pdf_path, pages=pages)
         logging.info(f"PDF에서 {len(tables)}개의 테이블을 추출했습니다.")
@@ -137,7 +141,10 @@ def compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, sim
     total_mismatches = 0
     results = []  # 엑셀 출력을 위한 데이터 저장 리스트
 
-    for title, html_table in html_tables:
+    logging.info(f"총 {len(html_tables)}개의 HTML 테이블과 {len(pdf_tables)}개의 PDF 테이블을 비교합니다.")
+
+    for idx, (title, html_table) in enumerate(html_tables, start=1):
+        logging.info(f"테이블 {idx}/{len(html_tables)}: '{title}' 비교 시작")
         # HTML 테이블 데이터 추출
         html_rows = html_table.find_all('tr')
         html_data = []
@@ -147,16 +154,18 @@ def compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, sim
 
         # 해당 제목이 포함된 PDF 테이블 찾기
         matched_pdf_table = None
-        for pdf_table in pdf_tables:
+        for pdf_table_idx, pdf_table in enumerate(pdf_tables):
             # PDF 테이블의 텍스트와 제목을 비교
             pdf_table_text = ' '.join([' '.join(row) for row in pdf_table.df.values.tolist()])
             if title in pdf_content or preprocess_text(title) in preprocess_text(pdf_table_text):
                 matched_pdf_table = pdf_table
+                logging.info(f"'{title}'에 해당하는 PDF 테이블을 찾았습니다. (PDF 테이블 인덱스: {pdf_table_idx})")
                 break
 
         if matched_pdf_table:
             pdf_data = matched_pdf_table.df.values.tolist()
         else:
+            logging.warning(f"'{title}'에 해당하는 PDF 테이블을 찾지 못했습니다.")
             pdf_data = []
 
         # 결과를 저장하기 전에 제목을 추가
@@ -164,15 +173,17 @@ def compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, sim
         max_rows = max(len(html_data), len(pdf_data))
 
         # 헤더 작성
-        header = ['HTML 데이터'] * (len(html_data[0]) if html_data else 0) + ['PDF 데이터'] * (len(pdf_data[0]) if pdf_data else 0) + ['검수과정']
+        html_header_len = len(html_data[0]) if html_data else 0
+        pdf_header_len = len(pdf_data[0]) if pdf_data else 0
+        header = ['HTML 데이터'] * html_header_len + ['PDF 데이터'] * pdf_header_len + ['검수과정']
 
         # 헤더를 결과에 추가
         results.append(header)
 
         # 데이터 비교 및 저장
         for i in range(max_rows):
-            html_row = html_data[i] if i < len(html_data) else [''] * (len(html_data[0]) if html_data else 0)
-            pdf_row = pdf_data[i] if i < len(pdf_data) else [''] * (len(pdf_data[0]) if pdf_data else 0)
+            html_row = html_data[i] if i < len(html_data) else [''] * html_header_len
+            pdf_row = pdf_data[i] if i < len(pdf_data) else [''] * pdf_header_len
 
             # 각 행의 데이터를 병합
             combined_row = html_row + pdf_row
@@ -189,6 +200,12 @@ def compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, sim
 
             combined_row.append(검수과정)
             results.append(combined_row)
+
+            if i % 10 == 0:
+                logging.debug(f"'{title}' 테이블의 {i+1}/{max_rows}번째 행 비교 완료")
+
+        logging.info(f"테이블 '{title}' 비교 완료")
+
     return results, total_mismatches
 
 def write_results_to_excel(data, output_path):
@@ -196,8 +213,11 @@ def write_results_to_excel(data, output_path):
         wb = Workbook()
         ws = wb.active
 
-        for row in data:
+        for row_idx, row in enumerate(data, start=1):
             ws.append(row)
+            if row_idx % 100 == 0:
+                logging.debug(f"{row_idx}개의 행을 엑셀에 기록했습니다.")
+
         wb.save(output_path)
         logging.info(f"검수 과정을 '{output_path}' 파일에 저장했습니다.")
     except Exception as e:
@@ -208,7 +228,7 @@ def main(similarity_threshold=0.95, log_level='INFO'):
     if not isinstance(numeric_level, int):
         print(f"유효하지 않은 로그 레벨입니다: {log_level}")
         sys.exit(1)
-    logging.basicConfig(level=numeric_level)
+    logging.basicConfig(level=numeric_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
     folder_path = ensure_inspection_upload_folder()
     output_folder_path = ensure_inspection_output_folder()
@@ -246,10 +266,16 @@ def main(similarity_threshold=0.95, log_level='INFO'):
         pdf_tables = extract_pdf_tables(pdf_path)
 
         # PDF 전체 텍스트 추출 (제목 비교를 위해)
+        logging.info(f"PDF 전체 텍스트를 추출합니다.")
         doc = fitz.open(pdf_path)
         pdf_content = ''
-        for page in doc:
-            pdf_content += page.get_text()
+        for page_num, page in enumerate(doc, start=1):
+            page_text = page.get_text()
+            pdf_content += page_text
+            if page_num % 5 == 0:
+                logging.debug(f"{page_num}번째 페이지까지 텍스트 추출 완료")
+
+        logging.info("PDF 텍스트 추출 완료")
 
         # 테이블 비교 및 결과 생성
         results, total_mismatches = compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, similarity_threshold)
