@@ -91,30 +91,43 @@ def extract_html_content(html_path):
 
 def extract_relevant_tables(soup):
     try:
-        tables = soup.find_all('table')
-        logging.info(f"총 {len(tables)}개의 테이블을 발견했습니다.")
-        relevant_tables = []
+        logging.info("관련 테이블을 추출합니다.")
+        target_text = '상해관련 특별약관보장명,지급사유,지급금액에 대한 표'
+        all_text = soup.get_text()
+        start_index = all_text.find(target_text)
+        if start_index == -1:
+            logging.error(f"'{target_text}'를 찾을 수 없습니다.")
+            sys.exit(1)
+        logging.info(f"'{target_text}'를 찾았습니다. 인덱스: {start_index}")
 
-        for idx, table in enumerate(tables):
-            logging.debug(f"테이블 {idx+1}/{len(tables)} 처리 중...")
-            # 테이블 이전의 모든 요소를 찾습니다.
-            previous_elements = table.find_all_previous()
-            logging.debug(f"테이블 {idx+1}의 이전 요소 개수: {len(previous_elements)}")
-            title_found = False
-            for elem in previous_elements:
-                text = elem.get_text().strip()
-                logging.debug(f"이전 요소 태그: {elem.name}, 텍스트: '{text}'")
-                if any(keyword in text for keyword in ['상해관련 특별약관', '상해 관련 특별약관', '상해관련', '상해 관련', '상해',
-                                                       '질병관련 특별약관', '질병 관련 특별약관', '질병관련', '질병 관련', '질병']):
-                    title = text
-                    logging.info(f"테이블 {idx+1}의 제목: '{title}' (태그: {elem.name})")
-                    relevant_tables.append((title, table))
-                    title_found = True
-                    break
-            if not title_found:
-                logging.debug(f"테이블 {idx+1}에서 관련 제목을 찾지 못했습니다.")
+        # 해당 텍스트 이후의 콘텐츠를 파싱하기 위해 새로운 BeautifulSoup 객체 생성
+        # 먼저 해당 위치의 태그를 찾아야 합니다.
+        def find_start_tag(soup, text):
+            for element in soup.find_all(string=re.compile(re.escape(text))):
+                return element.parent
+            return None
 
-        logging.info(f"관련 테이블 {len(relevant_tables)}개를 추출했습니다.")
+        start_tag = find_start_tag(soup, target_text)
+        if not start_tag:
+            logging.error(f"'{target_text}'에 해당하는 시작 태그를 찾을 수 없습니다.")
+            sys.exit(1)
+
+        # 시작 태그 이후의 모든 테이블을 추출
+        tables = []
+        for sibling in start_tag.find_all_next():
+            if sibling.name == 'table':
+                tables.append(sibling)
+            elif sibling.name == 'h1' or sibling.name == 'h2' or sibling.name == 'h3':
+                # 새로운 섹션이 시작되면 중단
+                break
+
+        if not tables:
+            logging.error("시작 태그 이후에 테이블을 찾을 수 없습니다.")
+            sys.exit(1)
+
+        logging.info(f"관련 테이블 {len(tables)}개를 추출했습니다.")
+        # 제목과 테이블을 튜플로 반환 (제목은 target_text로 설정)
+        relevant_tables = [(target_text, table) for table in tables]
         return relevant_tables
     except Exception as e:
         logging.error(f"HTML 테이블을 추출하는 데 실패했습니다: {e}")
