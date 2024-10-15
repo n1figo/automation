@@ -92,7 +92,7 @@ def extract_html_content(html_path):
 def extract_relevant_tables(soup):
     try:
         logging.info("관련 테이블을 추출합니다.")
-        target_text = '상해관련 특별약관보장명,지급사유,지급금액에 대한 표'
+        target_text = '상해관련 특별약관'
         all_text = soup.get_text()
         start_index = all_text.find(target_text)
         if start_index == -1:
