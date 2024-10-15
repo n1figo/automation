@@ -87,6 +87,7 @@ def extract_html_content(html_path):
             return soup
     except Exception as e:
         logging.error(f"HTML 내용을 추출하는 데 실패했습니다: {e}")
+        
         sys.exit(1)
 
 def extract_relevant_tables(soup):
