@@ -8,6 +8,7 @@ import argparse
 import os
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
+import camelot  # PDF 테이블 추출 라이브러리
 
 def ensure_inspection_upload_folder():
     folder_name = 'inspection upload'
@@ -116,29 +117,14 @@ def extract_relevant_tables(soup):
         logging.error(f"HTML 테이블을 추출하는 데 실패했습니다: {e}")
         sys.exit(1)
 
-def extract_relevant_pdf_sections(pdf_path, section_titles):
+def extract_pdf_tables(pdf_path, pages='all'):
     try:
-        doc = fitz.open(pdf_path)
-        content = ''
-        for page in doc:
-            content += page.get_text()
-
-        logging.debug(f"PDF 전체 내용 길이: {len(content)}")
-        sections = {}
-        for title in section_titles:
-            # 제목을 기준으로 텍스트를 분할합니다.
-            pattern = re.escape(title) + r'(.*?)(?=\n[A-Za-z가-힣]+\n|$)'
-            logging.debug(f"'{title}'에 대한 패턴: {pattern}")
-            matches = re.findall(pattern, content, re.DOTALL)
-            if matches:
-                sections[title] = matches[0]
-                logging.info(f"'{title}' 섹션을 추출했습니다. 길이: {len(matches[0])}")
-            else:
-                logging.warning(f"PDF에서 '{title}' 섹션을 찾을 수 없습니다.")
-                sections[title] = ''
-        return sections
+        # Camelot을 사용하여 PDF에서 테이블 추출
+        tables = camelot.read_pdf(pdf_path, pages=pages)
+        logging.info(f"PDF에서 {len(tables)}개의 테이블을 추출했습니다.")
+        return tables
     except Exception as e:
-        logging.error(f"PDF 내용을 추출하는 데 실패했습니다: {e}")
+        logging.error(f"PDF 테이블을 추출하는 데 실패했습니다: {e}")
         sys.exit(1)
 
 def preprocess_text(text):
@@ -147,72 +133,75 @@ def preprocess_text(text):
     text = re.sub(r'\s+', '', text)    # 공백 제거
     return text
 
-def compare_tables(html_tables, pdf_sections, similarity_threshold):
+def compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, similarity_threshold):
     total_mismatches = 0
     results = []  # 엑셀 출력을 위한 데이터 저장 리스트
-    header_written = False  # 헤더가 작성되었는지 여부
 
-    for title, table in html_tables:
-        html_rows = table.find_all('tr')
-        pdf_text = pdf_sections.get(title, '')
-        pdf_lines = pdf_text.split('\n')
+    for title, html_table in html_tables:
+        # HTML 테이블 데이터 추출
+        html_rows = html_table.find_all('tr')
+        html_data = []
+        for tr in html_rows:
+            row = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
+            html_data.append(row)
 
-        logging.debug(f"'{title}' 테이블의 행 개수: {len(html_rows)}")
-        logging.debug(f"'{title}' 섹션의 PDF 라인 수: {len(pdf_lines)}")
+        # 해당 제목이 포함된 PDF 테이블 찾기
+        matched_pdf_table = None
+        for pdf_table in pdf_tables:
+            # PDF 테이블의 텍스트와 제목을 비교
+            pdf_table_text = ' '.join([' '.join(row) for row in pdf_table.df.values.tolist()])
+            if title in pdf_content or preprocess_text(title) in preprocess_text(pdf_table_text):
+                matched_pdf_table = pdf_table
+                break
 
-        # 헤더 추출
-        header_cells = []
-        first_row = html_rows[0]
-        th_cells = first_row.find_all('th')
-        if th_cells:
-            header_cells = [th.get_text(strip=True) for th in th_cells]
+        if matched_pdf_table:
+            pdf_data = matched_pdf_table.df.values.tolist()
         else:
-            # th 셀이 없으면 첫 번째 행의 td 셀을 헤더로 사용
-            td_cells = first_row.find_all('td')
-            header_cells = [td.get_text(strip=True) for td in td_cells]
+            pdf_data = []
 
-        # '검수결과' 열 추가
-        if not header_written:
-            overall_header = ['제목'] + header_cells + ['검수결과']
-            header_written = True
+        # 결과를 저장하기 전에 제목을 추가
+        results.append([f"제목: {title}"])
+        max_rows = max(len(html_data), len(pdf_data))
 
-        # 데이터 수집
-        for row_idx, tr in enumerate(html_rows[1:], start=1):  # 헤더 행을 제외하고 시작
-            html_cells = tr.find_all(['td', 'th'])
-            html_line = ' '.join(tr.stripped_strings)
-            is_matched = False
+        # 헤더 작성
+        header = ['HTML 데이터'] * (len(html_data[0]) if html_data else 0) + ['PDF 데이터'] * (len(pdf_data[0]) if pdf_data else 0) + ['검수과정']
 
-            for pdf_line in pdf_lines:
-                similarity = SequenceMatcher(None, preprocess_text(html_line), preprocess_text(pdf_line)).ratio()
-                if similarity >= similarity_threshold:
-                    is_matched = True
-                    break
-            검수결과 = ''
-            if not is_matched:
+        # 헤더를 결과에 추가
+        results.append(header)
+
+        # 데이터 비교 및 저장
+        for i in range(max_rows):
+            html_row = html_data[i] if i < len(html_data) else [''] * (len(html_data[0]) if html_data else 0)
+            pdf_row = pdf_data[i] if i < len(pdf_data) else [''] * (len(pdf_data[0]) if pdf_data else 0)
+
+            # 각 행의 데이터를 병합
+            combined_row = html_row + pdf_row
+
+            # 행 단위로 비교
+            html_line = ''.join(html_row)
+            pdf_line = ''.join(pdf_row)
+            similarity = SequenceMatcher(None, preprocess_text(html_line), preprocess_text(pdf_line)).ratio()
+
+            검수과정 = ''
+            if similarity < similarity_threshold:
+                검수과정 = '불일치'
                 total_mismatches += 1
-                검수결과 = '불일치'
-            # 셀 값 가져오기
-            cell_values = [cell.get_text(strip=True) for cell in html_cells]
-            # '검수결과' 값 추가
-            cell_values.append(검수결과)
-            # 제목 추가
-            row_data = [title] + cell_values
-            results.append(row_data)
-    return overall_header, results, total_mismatches
 
-def write_results_to_excel(header, data, output_path):
+            combined_row.append(검수과정)
+            results.append(combined_row)
+    return results, total_mismatches
+
+def write_results_to_excel(data, output_path):
     try:
         wb = Workbook()
         ws = wb.active
-        # 헤더 작성
-        ws.append(header)
-        # 데이터 작성
+
         for row in data:
             ws.append(row)
         wb.save(output_path)
-        logging.info(f"검수 결과를 '{output_path}' 파일에 저장했습니다.")
+        logging.info(f"검수 과정을 '{output_path}' 파일에 저장했습니다.")
     except Exception as e:
-        logging.error(f"검수 결과를 엑셀 파일로 저장하는 데 실패했습니다: {e}")
+        logging.error(f"검수 과정을 엑셀 파일로 저장하는 데 실패했습니다: {e}")
 
 def main(similarity_threshold=0.95, log_level='INFO'):
     numeric_level = getattr(logging, log_level.upper(), None)
@@ -252,26 +241,32 @@ def main(similarity_threshold=0.95, log_level='INFO'):
             logging.error("HTML에서 필요한 테이블을 찾을 수 없습니다.")
             sys.exit(1)
 
-        # PDF에서 해당하는 섹션 추출
-        section_titles = [title for title, _ in html_tables]
-        pdf_sections = extract_relevant_pdf_sections(pdf_path, section_titles)
+        # PDF에서 테이블 추출
+        # PDF의 모든 페이지에서 테이블을 추출하거나, 필요한 페이지 범위를 지정할 수 있습니다.
+        pdf_tables = extract_pdf_tables(pdf_path)
 
-        # 각 라인별로 비교
-        header, results, total_mismatches = compare_tables(html_tables, pdf_sections, similarity_threshold)
+        # PDF 전체 텍스트 추출 (제목 비교를 위해)
+        doc = fitz.open(pdf_path)
+        pdf_content = ''
+        for page in doc:
+            pdf_content += page.get_text()
+
+        # 테이블 비교 및 결과 생성
+        results, total_mismatches = compare_tables_and_generate_report(html_tables, pdf_tables, pdf_content, similarity_threshold)
 
         # 결과를 엑셀 파일로 저장
-        output_excel_path = os.path.join(output_folder_path, '검수결과.xlsx')
-        write_results_to_excel(header, results, output_excel_path)
+        output_excel_path = os.path.join(output_folder_path, '검수과정.xlsx')
+        write_results_to_excel(results, output_excel_path)
 
         if total_mismatches > 0:
-            logging.warning(f"{total_mismatches}개의 불일치하는 행이 발견되었습니다.")
+            logging.warning(f"{total_mismatches}개의 불일치가 발견되었습니다.")
         else:
-            logging.info("모든 행이 일치합니다. PASS")
+            logging.info("모든 테이블이 일치합니다. PASS")
     else:
         logging.error("'요약서' PDF 또는 '보장내용' HTML 파일을 찾을 수 없습니다.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PDF와 HTML 문서를 비교하여 검수 결과를 엑셀로 출력합니다.")
+    parser = argparse.ArgumentParser(description="PDF와 HTML 문서를 비교하여 검수 과정을 엑셀로 출력합니다.")
     parser.add_argument('--threshold', type=float, default=0.95, help="유사도 임계값 (기본값: 0.95)")
     parser.add_argument('--loglevel', default='INFO', help="로그 레벨 설정 (예: DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args()
