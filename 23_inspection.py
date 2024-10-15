@@ -6,6 +6,8 @@ import sys
 import logging
 import argparse
 import os
+import email
+from email import policy
 
 def ensure_inspection_upload_folder():
     folder_name = 'inspection upload'
@@ -36,11 +38,34 @@ def find_files_in_folder(folder_path):
                 html_files['가입예시'] = file_path
     return pdf_files, html_files
 
-def extract_relevant_tables(html_path):
+def extract_html_content(html_path):
     try:
         with open(html_path, 'r', encoding='utf-8') as file:
-            soup = BeautifulSoup(file, 'html.parser')
+            content = file.read()
         
+        if html_path.lower().endswith('.mhtml'):
+            # mhtml 파일 처리
+            msg = email.message_from_string(content, policy=policy.default)
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                if content_type == 'text/html':
+                    html_content = part.get_content()
+                    break
+            else:
+                logging.error(f"mhtml 파일에서 HTML 콘텐츠를 찾을 수 없습니다: {html_path}")
+                sys.exit(1)
+        else:
+            # 일반 HTML 파일 처리
+            html_content = content
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        return soup
+    except Exception as e:
+        logging.error(f"HTML 내용을 추출하는 데 실패했습니다: {e}")
+        sys.exit(1)
+
+def extract_relevant_tables(soup):
+    try:
         tables = soup.find_all('table')
         logging.info(f"총 {len(tables)}개의 테이블을 발견했습니다.")
         relevant_tables = []
@@ -162,8 +187,11 @@ def main(similarity_threshold=0.95, log_level='INFO'):
         logging.info(f"비교할 PDF 파일: {pdf_path}")
         logging.info(f"비교할 HTML 파일: {html_path}")
         
+        # HTML 콘텐츠 추출
+        soup = extract_html_content(html_path)
+        
         # HTML에서 필요한 테이블 추출
-        html_tables = extract_relevant_tables(html_path)
+        html_tables = extract_relevant_tables(soup)
         if not html_tables:
             logging.error("HTML에서 필요한 테이블을 찾을 수 없습니다.")
             sys.exit(1)
