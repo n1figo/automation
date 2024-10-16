@@ -1,16 +1,21 @@
-import fitz  # PyMuPDF
 import camelot
-import cv2
+import pandas as pd
 import numpy as np
+import cv2
+import os
+import fitz  # PyMuPDF
+from PIL import Image
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Alignment, Font
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 import re
 import sys
 import logging
 import argparse
-import os
 from playwright.sync_api import sync_playwright
-from openpyxl import Workbook
 
 def ensure_inspection_upload_folder():
     folder_name = 'inspection upload'
@@ -128,51 +133,81 @@ def extract_relevant_tables(soup):
 
 def pdf_to_image(page):
     pix = page.get_pixmap()
-    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-    if pix.n > 3:
-        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
-    return img
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    return np.array(img)
 
-def extract_pdf_tables_after_target(pdf_path, target_text):
-    try:
-        logging.info(f"'{pdf_path}' 파일에서 '{target_text}' 이후의 테이블을 추출합니다.")
-        doc = fitz.open(pdf_path)
-        page_num = None
+def detect_highlights(image):
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    
+    # 여러 색상 범위 정의 (HSV)
+    color_ranges = [
+        ((20, 100, 100), (40, 255, 255)),  # 노란색
+        ((100, 100, 100), (140, 255, 255)),  # 파란색
+        ((125, 100, 100), (155, 255, 255))  # 보라색
+    ]
+    
+    masks = []
+    for lower, upper in color_ranges:
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        masks.append(mask)
+    
+    # 모든 마스크 결합
+    combined_mask = np.zeros_like(masks[0])
+    for mask in masks:
+        combined_mask = cv2.bitwise_or(combined_mask, mask)
+    
+    kernel = np.ones((5,5), np.uint8)
+    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+    
+    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    return contours
 
-        # '상해관련 특별약관'이 있는 페이지를 찾음
-        for num, page in enumerate(doc, start=1):
-            text = page.get_text()
-            if target_text in text:
-                page_num = num
-                logging.info(f"'{target_text}'가 {page_num}번째 페이지에 있습니다.")
-                break
+def get_highlight_regions(contours, image_height):
+    regions = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        top = image_height - (y + h)
+        bottom = image_height - y
+        regions.append((top, bottom))
+    return regions
 
-        if page_num is None:
-            logging.error(f"'{target_text}'를 PDF에서 찾을 수 없습니다.")
-            sys.exit(1)
+def extract_tables_with_camelot(pdf_path, page_number):
+    logging.info(f"{page_number} 페이지에서 Camelot을 사용하여 테이블을 추출합니다.")
+    tables = camelot.read_pdf(pdf_path, pages=str(page_number), flavor='lattice')
+    logging.info(f"{page_number} 페이지에서 {len(tables)}개의 테이블을 찾았습니다.")
+    return tables
 
-        all_tables = []
-        for page_number in range(page_num - 1, len(doc)):
-            logging.info(f"{page_number + 1}페이지의 표를 추출합니다.")
-            page = doc[page_number]
-            image = pdf_to_image(page)
+def process_tables(tables, highlight_regions, page_height):
+    processed_data = []
+    for i, table in enumerate(tables):
+        df = table.df
+        x1, y1, x2, y2 = table._bbox
 
-            # Camelot을 사용하여 테이블 추출
-            tables = camelot.read_pdf(pdf_path, pages=str(page_number + 1), flavor='lattice', suppress_stdout=True)
-            if tables:
-                all_tables.extend(tables)
-            else:
-                logging.info(f"{page_number + 1}페이지에서 테이블을 찾을 수 없습니다.")
+        table_height = y2 - y1
+        row_height = table_height / len(df)
 
-        if not all_tables:
-            logging.error("PDF에서 테이블을 찾을 수 없습니다.")
-            sys.exit(1)
+        for row_index in range(len(df)):
+            row_data = df.iloc[row_index].copy()
+            
+            row_top = y2 - (row_index + 1) * row_height
+            row_bottom = y2 - row_index * row_height
+            
+            row_highlighted = check_highlight((row_top, row_bottom), highlight_regions)
+            row_data["변경사항"] = "추가" if row_highlighted else ""
+            row_data["Table_Number"] = i + 1
+            processed_data.append(row_data)
 
-        logging.info(f"PDF에서 총 {len(all_tables)}개의 테이블을 추출했습니다.")
-        return all_tables
-    except Exception as e:
-        logging.error(f"PDF 테이블을 추출하는 데 실패했습니다: {e}")
-        sys.exit(1)
+    return pd.DataFrame(processed_data)
+
+def check_highlight(row_range, highlight_regions):
+    row_top, row_bottom = row_range
+    for region_top, region_bottom in highlight_regions:
+        if (region_top <= row_top <= region_bottom) or (region_top <= row_bottom <= region_bottom) or \
+           (row_top <= region_top <= row_bottom) or (row_top <= region_bottom <= row_bottom):
+            return True
+    return False
 
 def preprocess_text(text):
     # 공백 및 특수문자 제거
@@ -262,17 +297,41 @@ def write_results_to_excel(data, output_path):
     except Exception as e:
         logging.error(f"검수 과정을 엑셀 파일로 저장하는 데 실패했습니다: {e}")
 
-def extract_title_from_pdf(pdf_path):
-    try:
-        doc = fitz.open(pdf_path)
-        first_page = doc[0]
-        page_text = first_page.get_text()
-        title = page_text.strip().split('\n')[0]  # 첫 번째 줄을 제목으로 가정
-        logging.info(f"PDF에서 제목을 추출했습니다: {title}")
-        return title
-    except Exception as e:
-        logging.error(f"PDF에서 제목을 추출하는 데 실패했습니다: {e}")
-        return ""
+def save_to_excel_with_highlight(df, output_path, title=None):
+    wb = Workbook()
+    ws = wb.active
+
+    # 제목을 추가
+    start_row = 1
+    if title:
+        ws.cell(row=1, column=1, value=title)
+        max_col = len(df.columns)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        title_cell = ws.cell(row=1, column=1)
+        title_cell.font = Font(size=20, bold=True)
+        ws.row_dimensions[1].height = 30  # 제목 행 높이 조정
+        start_row = 2  # 데이터는 다음 행부터 시작
+
+    # DataFrame을 Excel로 저장
+    for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=start_row):
+        for c_idx, value in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=value)
+
+    yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+    if '변경사항' in df.columns:
+        change_col_index = df.columns.get_loc('변경사항') + 1
+    else:
+        raise ValueError("DataFrame에 '변경사항' 컬럼이 없습니다.")
+
+    for row in range(start_row + 1, ws.max_row + 1):
+        cell_value = ws.cell(row=row, column=change_col_index).value
+        if cell_value == '추가':
+            for col in range(1, ws.max_column + 1):
+                ws.cell(row=row, column=col).fill = yellow_fill
+
+    wb.save(output_path)
+    logging.info(f"데이터를 '{output_path}'에 저장했습니다. (하이라이트 적용됨)")
 
 def main(similarity_threshold=0.95, log_level='INFO'):
     numeric_level = getattr(logging, log_level.upper(), None)
@@ -304,7 +363,11 @@ def main(similarity_threshold=0.95, log_level='INFO'):
         logging.info(f"비교할 HTML 파일: {html_path}")
 
         # PDF에서 제목 추출
-        pdf_title = extract_title_from_pdf(pdf_path)
+        doc = fitz.open(pdf_path)
+        first_page = doc[0]
+        page_text = first_page.get_text("text")
+        pdf_title = page_text.strip().split('\n')[0]  # 첫 번째 줄을 제목으로 가정
+        logging.info(f"PDF에서 제목을 추출했습니다: {pdf_title}")
 
         # HTML 콘텐츠 추출
         soup = extract_html_content(html_path)
@@ -317,14 +380,86 @@ def main(similarity_threshold=0.95, log_level='INFO'):
 
         # PDF에서 '상해관련 특별약관' 이후의 테이블 추출
         target_text = '상해관련 특별약관'
-        pdf_tables = extract_pdf_tables_after_target(pdf_path, target_text)
+        page_num = None
+
+        # '상해관련 특별약관'이 있는 페이지를 찾음
+        for num, page in enumerate(doc, start=1):
+            text = page.get_text()
+            logging.debug(f"페이지 {num}의 텍스트 내용:\n{text}\n")
+            if target_text in text:
+                page_num = num
+                logging.info(f"'{target_text}'가 {page_num}번째 페이지에 있습니다.")
+                break
+
+        if page_num is None:
+            logging.error(f"'{target_text}'를 PDF에서 찾을 수 없습니다.")
+            # 추가 디버깅: 모든 페이지에서 텍스트 검색
+            logging.debug("PDF의 모든 페이지에서 텍스트를 검색합니다.")
+            for num, page in enumerate(doc, start=1):
+                text = page.get_text()
+                if target_text in text:
+                    logging.info(f"'{target_text}'가 {num}번째 페이지에 있습니다.")
+                    page_num = num
+                    break
+            if page_num is None:
+                logging.error(f"'{target_text}'를 PDF에서 여전히 찾을 수 없습니다. 스크립트를 종료합니다.")
+                sys.exit(1)
+
+        all_processed_data = []
+        pdf_tables = []
+
+        for page_number in range(page_num - 1, len(doc)):
+            logging.info(f"Processing page: {page_number + 1}/{len(doc)}")
+
+            page = doc[page_number]
+            image = pdf_to_image(page)
+
+            contours = detect_highlights(image)
+            highlight_regions = get_highlight_regions(contours, image.shape[0])
+
+            logging.info(f"Page {page_number + 1}: Detected {len(highlight_regions)} highlighted regions")
+
+            tables = extract_tables_with_camelot(pdf_path, page_number + 1)
+
+            if not tables:
+                logging.info(f"Page {page_number + 1}: No tables extracted")
+                continue
+
+            # 테이블 저장 (검수 과정에 사용하기 위해)
+            pdf_tables.extend(tables)
+
+            processed_df = process_tables(tables, highlight_regions, image.shape[0])
+            processed_df['Page_Number'] = page_number + 1
+            all_processed_data.append(processed_df)
+
+        if not all_processed_data:
+            logging.error("No processed data available.")
+            sys.exit(1)
+
+        final_df = pd.concat(all_processed_data, ignore_index=True)
+
+        # 결과를 엑셀 파일로 저장 (하이라이트된 변경 사항 포함)
+        output_excel_path = os.path.join(output_folder_path, '검수과정.xlsx')
+        save_to_excel_with_highlight(final_df, output_excel_path, title=pdf_title)
 
         # 테이블 비교 및 결과 생성
-        results, total_mismatches = compare_tables_and_generate_report(html_tables, pdf_tables, similarity_threshold)
+        comparison_results, total_mismatches = compare_tables_and_generate_report(html_tables, pdf_tables, similarity_threshold)
 
-        # 결과를 엑셀 파일로 저장
-        output_excel_path = os.path.join(output_folder_path, '검수과정.xlsx')
-        write_results_to_excel(results, output_excel_path)
+        # 비교 결과를 추가 시트에 저장
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "하이라이트된 변경 사항"
+
+        for r_idx, row in enumerate(dataframe_to_rows(final_df, index=False, header=True), start=1):
+            for c_idx, value in enumerate(row, start=1):
+                ws1.cell(row=r_idx, column=c_idx, value=value)
+
+        ws2 = wb.create_sheet(title="테이블 비교 결과")
+        for row_idx, row in enumerate(comparison_results, start=1):
+            ws2.append(row)
+
+        wb.save(output_excel_path)
+        logging.info(f"검수 과정을 '{output_excel_path}' 파일에 저장했습니다.")
 
         if total_mismatches > 0:
             logging.warning(f"{total_mismatches}개의 불일치가 발견되었습니다.")
@@ -334,7 +469,7 @@ def main(similarity_threshold=0.95, log_level='INFO'):
         logging.error("'요약서' PDF 또는 '보장내용' HTML 파일을 찾을 수 없습니다.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PDF와 HTML 문서를 비교하여 검수 과정을 엑셀로 출력합니다.")
+    parser = argparse.ArgumentParser(description="PDF와 HTML 문서를 비교하여 검수 과정을 자동화합니다.")
     parser.add_argument('--threshold', type=float, default=0.95, help="유사도 임계값 (기본값: 0.95)")
     parser.add_argument('--loglevel', default='INFO', help="로그 레벨 설정 (예: DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args()
