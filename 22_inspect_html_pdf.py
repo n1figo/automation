@@ -1,4 +1,7 @@
 import fitz  # PyMuPDF
+import camelot
+import cv2
+import numpy as np
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 import re
@@ -8,7 +11,6 @@ import argparse
 import os
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
-import camelot  # PDF 테이블 추출 라이브러리
 
 def ensure_inspection_upload_folder():
     folder_name = 'inspection upload'
@@ -124,6 +126,13 @@ def extract_relevant_tables(soup):
         logging.error(f"HTML 테이블을 추출하는 데 실패했습니다: {e}")
         sys.exit(1)
 
+def pdf_to_image(page):
+    pix = page.get_pixmap()
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    if pix.n > 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+    return img
+
 def extract_pdf_tables_after_target(pdf_path, target_text):
     try:
         logging.info(f"'{pdf_path}' 파일에서 '{target_text}' 이후의 테이블을 추출합니다.")
@@ -142,16 +151,25 @@ def extract_pdf_tables_after_target(pdf_path, target_text):
             logging.error(f"'{target_text}'를 PDF에서 찾을 수 없습니다.")
             sys.exit(1)
 
-        # 해당 페이지부터 끝까지 테이블 추출
-        pages = f'{page_num}-end'
-        tables = camelot.read_pdf(pdf_path, pages=pages)
+        all_tables = []
+        for page_number in range(page_num - 1, len(doc)):
+            logging.info(f"{page_number + 1}페이지의 표를 추출합니다.")
+            page = doc[page_number]
+            image = pdf_to_image(page)
 
-        if not tables:
+            # Camelot을 사용하여 테이블 추출
+            tables = camelot.read_pdf(pdf_path, pages=str(page_number + 1), flavor='lattice', suppress_stdout=True)
+            if tables:
+                all_tables.extend(tables)
+            else:
+                logging.info(f"{page_number + 1}페이지에서 테이블을 찾을 수 없습니다.")
+
+        if not all_tables:
             logging.error("PDF에서 테이블을 찾을 수 없습니다.")
             sys.exit(1)
 
-        logging.info(f"PDF에서 {len(tables)}개의 테이블을 추출했습니다.")
-        return tables
+        logging.info(f"PDF에서 총 {len(all_tables)}개의 테이블을 추출했습니다.")
+        return all_tables
     except Exception as e:
         logging.error(f"PDF 테이블을 추출하는 데 실패했습니다: {e}")
         sys.exit(1)
@@ -244,6 +262,18 @@ def write_results_to_excel(data, output_path):
     except Exception as e:
         logging.error(f"검수 과정을 엑셀 파일로 저장하는 데 실패했습니다: {e}")
 
+def extract_title_from_pdf(pdf_path):
+    try:
+        doc = fitz.open(pdf_path)
+        first_page = doc[0]
+        page_text = first_page.get_text()
+        title = page_text.strip().split('\n')[0]  # 첫 번째 줄을 제목으로 가정
+        logging.info(f"PDF에서 제목을 추출했습니다: {title}")
+        return title
+    except Exception as e:
+        logging.error(f"PDF에서 제목을 추출하는 데 실패했습니다: {e}")
+        return ""
+
 def main(similarity_threshold=0.95, log_level='INFO'):
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
@@ -272,6 +302,9 @@ def main(similarity_threshold=0.95, log_level='INFO'):
 
         logging.info(f"비교할 PDF 파일: {pdf_path}")
         logging.info(f"비교할 HTML 파일: {html_path}")
+
+        # PDF에서 제목 추출
+        pdf_title = extract_title_from_pdf(pdf_path)
 
         # HTML 콘텐츠 추출
         soup = extract_html_content(html_path)
