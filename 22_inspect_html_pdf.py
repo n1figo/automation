@@ -235,17 +235,31 @@ def compare_tables_and_generate_report(html_tables, pdf_tables_with_titles, simi
 
         # 결과를 저장하기 전에 제목을 추가
         results.append([f"제목: {html_title}"])
-        max_rows = max(len(html_data), len(pdf_data))
 
-        # 헤더 작성 (PDF 데이터의 컬럼명을 사용)
+        # 컬럼명을 추가 (html데이터, PDF데이터, 검수과정)
         html_header = html_data[0] if html_data else []
         pdf_header = pdf_columns if pdf_columns else []
-        header = html_header + pdf_header + ['검수과정']
+        max_cols = max(len(html_header), len(pdf_header))
+        combined_header = []
+        for i in range(max_cols):
+            if i < len(html_header):
+                combined_header.append('html데이터')
+            else:
+                combined_header.append('')
+        for i in range(max_cols):
+            if i < len(pdf_header):
+                combined_header.append('PDF데이터')
+            else:
+                combined_header.append('')
+        combined_header.append('검수과정')
+        results.append(combined_header)
 
-        # 헤더를 결과에 추가
+        # 헤더 작성
+        header = html_header + pdf_header + ['검수과정']
         results.append(header)
 
         # 데이터 비교 및 저장
+        max_rows = max(len(html_data), len(pdf_data))
         for i in range(1, max_rows):
             html_row = html_data[i] if i < len(html_data) else [''] * len(html_header)
             pdf_row = pdf_data[i-1] if i-1 < len(pdf_data) else [''] * len(pdf_header)
@@ -278,10 +292,22 @@ def write_results_to_excel(data, output_path):
         wb = Workbook()
         ws = wb.active
 
-        for row_idx, row in enumerate(data, start=1):
+        row_idx = 1
+        for row in data:
             ws.append(row)
+            if '제목:' in row[0]:
+                # 제목 행의 폰트 설정 (볼드체)
+                ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(row))
+                cell = ws.cell(row=row_idx, column=1)
+                cell.font = Font(bold=True)
+            row_idx += 1
             if row_idx % 100 == 0:
                 logging.debug(f"{row_idx}개의 행을 엑셀에 기록했습니다.")
+
+        # 열 너비 자동 조정
+        for column_cells in ws.columns:
+            length = max(len(str(cell.value) if cell.value else "") for cell in column_cells)
+            ws.column_dimensions[get_column_letter(column_cells[0].column)].width = length + 2
 
         wb.save(output_path)
         logging.info(f"검수 과정을 '{output_path}' 파일에 저장했습니다.")
