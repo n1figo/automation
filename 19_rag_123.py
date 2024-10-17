@@ -1,10 +1,12 @@
 import PyPDF2
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
+import camelot
 import pandas as pd
+import fitz
 import os
-from fuzzywuzzy import fuzz
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Alignment, Font
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 def extract_text_from_pdf(pdf_path):
     with open(pdf_path, 'rb') as file:
@@ -17,112 +19,105 @@ def extract_text_from_pdf(pdf_path):
             page_numbers.extend([i+1] * len(page_text.split()))
     return text, page_numbers
 
-def extract_text_from_html(html_path):
-    with open(html_path, 'r', encoding='utf-8') as file:
-        text = file.read()
-    return text
-
-def split_text_into_chunks(text, chunk_size=200, overlap=50):
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), chunk_size - overlap):
-        chunk = " ".join(words[i:i + chunk_size])
-        chunks.append(chunk)
-    return chunks
-
-def create_index(chunks):
-    model = SentenceTransformer('distiluse-base-multilingual-cased')
-    embeddings = model.encode(chunks)
-    
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings.astype('float32'))
-    
-    return index, model
-
-def search(query, index, model, chunks, page_numbers=None, k=5):
-    query_vector = model.encode([query])
-    distances, indices = index.search(query_vector.astype('float32'), k)
-    
-    results = []
-    for idx in indices[0]:
-        result = {'content': chunks[idx]}
-        if page_numbers:
-            result['page'] = page_numbers[idx]
-        results.append(result)
-    
+def find_pages_with_keywords(text, keywords, page_numbers):
+    results = {}
+    for keyword in keywords:
+        pages = []
+        for i, (word, page) in enumerate(zip(text.split(), page_numbers)):
+            if keyword in word:
+                if page not in pages:
+                    pages.append(page)
+        results[keyword] = pages
     return results
 
-def fuzzy_search(query, text, threshold=80):
-    words = text.split()
-    results = []
-    for i, word in enumerate(words):
-        if fuzz.partial_ratio(query, word) > threshold:
-            start = max(0, i - 5)
-            end = min(len(words), i + 6)
-            context = " ".join(words[start:end])
-            results.append(context)
-    return results
+def extract_tables_with_camelot(pdf_path, page_numbers):
+    all_tables = []
+    for page in page_numbers:
+        print(f"Extracting tables from page {page} using Camelot...")
+        tables = camelot.read_pdf(pdf_path, pages=str(page), flavor='lattice')
+        all_tables.extend(tables)
+    print(f"Found {len(all_tables)} tables in total")
+    return all_tables
 
-def find_insurance_types(text):
-    types = []
-    for type in ["1종", "2종", "3종"]:
-        if type in text:
-            types.append(type)
-    return types
+def process_tables(tables):
+    processed_data = []
+    for i, table in enumerate(tables):
+        df = table.df
+        for row_index in range(len(df)):
+            row_data = df.iloc[row_index].copy()
+            row_data["Table_Number"] = i + 1
+            processed_data.append(row_data)
+    return pd.DataFrame(processed_data)
 
-def results_to_dataframe(results, query_type, text):
-    df = pd.DataFrame(results)
-    df['type'] = query_type
-    
-    # 보험 종류 찾기
-    df['insurance_types'] = df['content'].apply(lambda x: ", ".join(find_insurance_types(x)))
-    
-    return df
+def save_to_excel(df, output_path, title=None):
+    wb = Workbook()
+    ws = wb.active
+
+    if title:
+        ws.cell(row=1, column=1, value=title)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns))
+        title_cell = ws.cell(row=1, column=1)
+        title_cell.font = Font(size=20, bold=True)
+        ws.row_dimensions[1].height = 30
+
+    for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=2):
+        for c_idx, value in enumerate(row, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=value)
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
+
+    for column in ws.columns:
+        max_length = 0
+        column_letter = get_column_letter(column[0].column)
+        for cell in column:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        adjusted_width = min(max_length + 2, 50)
+        ws.column_dimensions[column_letter].width = adjusted_width
+
+    wb.save(output_path)
+    print(f"Data saved to '{output_path}'")
 
 def main():
-    file_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
+    uploads_folder = "/workspaces/automation/uploads"
+    output_folder = "/workspaces/automation/output"
     
-    _, file_extension = os.path.splitext(file_path)
-    
-    if file_extension.lower() == '.pdf':
-        text, page_numbers = extract_text_from_pdf(file_path)
-    elif file_extension.lower() in ['.html', '.htm']:
-        text = extract_text_from_html(file_path)
-        page_numbers = None
-    else:
-        print("지원되지 않는 파일 형식입니다.")
+    os.makedirs(output_folder, exist_ok=True)
+
+    pdf_files = [f for f in os.listdir(uploads_folder) if f.endswith('.pdf')]
+    if not pdf_files:
+        print("No PDF files found in the uploads folder.")
         return
 
-    chunks = split_text_into_chunks(text)
-    index, model = create_index(chunks)
+    pdf_file = pdf_files[0]
+    pdf_path = os.path.join(uploads_folder, pdf_file)
+    output_excel_path = os.path.join(output_folder, f"{os.path.splitext(pdf_file)[0]}_analysis.xlsx")
 
-    # 선택특약 검색
-    select_query = "선택특약"
-    select_results = search(select_query, index, model, chunks, page_numbers)
-    select_df = results_to_dataframe(select_results, "선택특약", text)
+    print(f"Processing PDF file: {pdf_file}")
 
-    # 상해관련 특약 검색 (퍼지 매칭 사용)
-    injury_query = "상해관련특약"
-    injury_results = fuzzy_search(injury_query, text)
-    injury_df = pd.DataFrame({'content': injury_results, 'type': '상해관련특약'})
-    injury_df['insurance_types'] = injury_df['content'].apply(lambda x: ", ".join(find_insurance_types(x)))
+    # Step 1: Find pages with keywords
+    text, page_numbers = extract_text_from_pdf(pdf_path)
+    keywords = ["[1종]", "[2종]", "[3종]", "선택특약"]
+    keyword_results = find_pages_with_keywords(text, keywords, page_numbers)
 
-    # 결과 합치기
-    final_df = pd.concat([select_df, injury_df], ignore_index=True)
+    for keyword, pages in keyword_results.items():
+        print(f"{keyword}이(가) 포함된 페이지: {pages}")
 
-    # 엑셀 파일로 저장
-    output_path = "insurance_special_clauses_search_results.xlsx"
-    final_df.to_excel(output_path, index=False, engine='openpyxl')
+    # Step 2: Extract and process tables for "선택특약"
+    special_clause_pages = keyword_results["선택특약"]
+    tables = extract_tables_with_camelot(pdf_path, special_clause_pages)
+    processed_df = process_tables(tables)
 
-    print(f"검색 결과가 {output_path}에 저장되었습니다.")
+    # Extract title from the first page
+    doc = fitz.open(pdf_path)
+    first_page = doc[0]
+    page_text = first_page.get_text("text")
+    title = page_text.strip().split('\n')[0]
+    print(f"Extracted title: {title}")
 
-    if page_numbers:
-        select_pages = [page for page, chunk in zip(page_numbers, chunks) if "선택특약" in chunk]
-        injury_pages = [page for page, chunk in zip(page_numbers, chunks) if any(result in chunk for result in injury_results)]
+    # Save results to Excel
+    save_to_excel(processed_df, output_excel_path, title=f"{title} - 분석 결과")
 
-        print("선택특약이 포함된 페이지:", list(set(select_pages)))
-        print("상해관련특약이 포함된 페이지:", list(set(injury_pages)))
+    print(f"All processed data has been saved to {output_excel_path}")
 
 if __name__ == "__main__":
     main()
