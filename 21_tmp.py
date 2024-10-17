@@ -313,8 +313,8 @@ def main():
 
     # 키워드가 포함된 페이지 찾기 및 출력
     select_pages = find_pages_with_keyword(full_text, "선택특약", page_numbers)
-    injury_pages = find_pages_with_keyword(full_text, "상해관련 특약", page_numbers)
-    injury_special_pages = find_pages_with_keyword(full_text, "상해관련 특별약관", page_numbers)
+    injury_pages = find_pages_with_keyword(full_text, "상해관련특약", page_numbers)
+    injury_special_pages = find_pages_with_keyword(full_text, "상해관련특별약관", page_numbers)
 
     print("선택특약이 포함된 페이지:", select_pages)
     print("상해관련 특약이 포함된 페이지:", injury_pages)
@@ -331,9 +331,9 @@ def main():
 
     # '상해관련 특약'이 파싱되었는지 확인
     if injury_pages or injury_special_pages:
-        print("'상해관련 특약'이 문서에서 발견되었습니다.")
+        print("'상해관련특약'이 문서에서 발견되었습니다.")
     else:
-        print("'상해관련 특약'이 문서에서 발견되지 않았습니다.")
+        print("'상해관련특약'이 문서에서 발견되지 않았습니다.")
 
     # 기존 테이블 처리 및 엑셀 저장
     df_dict = {}
