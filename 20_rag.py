@@ -27,7 +27,7 @@ def split_text_into_chunks(text, chunk_size=200, overlap=50):
 
 # 임베딩 생성 및 인덱스 구축
 def create_index(chunks):
-    model = SentenceTransformer('distilbert-base-nli-mean-tokens')
+    model = SentenceTransformer('distiluse-base-multilingual-cased')
     embeddings = model.encode(chunks)
     
     dimension = embeddings.shape[1]
@@ -56,9 +56,17 @@ def results_to_dataframe(results, query_type):
     df['type'] = query_type
     return df
 
+# 특정 키워드가 포함된 페이지 찾기
+def find_pages_with_keyword(text, keyword):
+    pages = []
+    for i, page in enumerate(text.split('\n')):
+        if keyword in page:
+            pages.append(i + 1)  # 페이지 번호는 1부터 시작
+    return pages
+
 # 메인 실행 코드
 def main():
-    pdf_path = "path_to_your_pdf.pdf"  # PDF 파일 경로를 지정하세요
+    pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
     text, page_numbers = extract_text_with_page_numbers(pdf_path)
     chunks = split_text_into_chunks(text)
     chunk_page_numbers = [page_numbers[i] for i in range(0, len(page_numbers), 200)]  # 청크 사이즈에 맞춰 조정
@@ -82,6 +90,15 @@ def main():
     final_df.to_excel(output_path, index=False, engine='openpyxl')
 
     print(f"검색 결과가 {output_path}에 저장되었습니다.")
+
+    # 키워드가 포함된 페이지 찾기 및 출력
+    select_pages = find_pages_with_keyword(text, "선택특약")
+    injury_pages = find_pages_with_keyword(text, "상해관련특약")
+    injury_special_pages = find_pages_with_keyword(text, "상해관련 특별약관")
+
+    print("선택특약이 포함된 페이지:", select_pages)
+    print("상해관련특약이 포함된 페이지:", injury_pages)
+    print("상해관련 특별약관이 포함된 페이지:", injury_special_pages)
 
 if __name__ == "__main__":
     main()
