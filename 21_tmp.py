@@ -298,7 +298,7 @@ def main():
     select_df = results_to_dataframe(select_results, "선택특약")
 
     # 상해관련 특약 검색
-    injury_query = "상해관련 특약"
+    injury_query = "상해관련특약"
     injury_results = search(injury_query, index, model, chunks, page_numbers, k=10, threshold=0.5)
     injury_df = results_to_dataframe(injury_results, "상해관련특약")
 
