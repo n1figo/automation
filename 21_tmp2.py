@@ -171,6 +171,11 @@ def save_tables_to_excel(tables_dict, output_path, document_title=None):
             current_row += 2  # 빈 줄 추가
 
         for idx, table_info in enumerate(tables):
+            # table_info는 표 정보 dict
+            if 'dataframe' not in table_info:
+                print(f"Skipping table in sheet '{sheet_name}' as 'dataframe' key is missing.")
+                continue  # 'dataframe' 키가 없으면 스킵
+
             df = table_info['dataframe']
             title = table_info['title']
             page = table_info['page']
@@ -296,6 +301,10 @@ def main():
     select_pages = find_pages_with_keyword_in_page(texts_by_page, "선택특약")
     print("선택특약이 포함된 페이지:", select_pages)
 
+    if not select_pages:
+        print("선택특약이 포함된 페이지를 찾지 못했습니다.")
+        return
+
     # 선택특약이 있는 페이지의 텍스트를 txt 파일로 저장
     doc = fitz.open(pdf_path)
     for page_num in select_pages:
@@ -307,7 +316,8 @@ def main():
         print(f"Page {page_num}의 텍스트가 {txt_output_path}에 저장되었습니다.")
 
     # 선택특약 페이지 내에서 1종, 2종, 3종 찾기 및 출력
-    sheets = {
+    # 별도의 데이터프레임 생성
+    종_sheets = {
         "1종": [],
         "2종": [],
         "3종": []
@@ -319,21 +329,21 @@ def main():
         if "1종" in page_text:
             print(f"Page {page_num}: 1종이 검출되었습니다.")
             종_detected = True
-            sheets["1종"].append({
+            종_sheets["1종"].append({
                 'page': page_num,
                 'text': page_text
             })
         if "2종" in page_text:
             print(f"Page {page_num}: 2종이 검출되었습니다.")
             종_detected = True
-            sheets["2종"].append({
+            종_sheets["2종"].append({
                 'page': page_num,
                 'text': page_text
             })
         if "3종" in page_text:
             print(f"Page {page_num}: 3종이 검출되었습니다.")
             종_detected = True
-            sheets["3종"].append({
+            종_sheets["3종"].append({
                 'page': page_num,
                 'text': page_text
             })
@@ -373,19 +383,30 @@ def main():
     # Camelot과 PyMuPDF를 함께 사용하여 표와 제목 추출
     tables = extract_tables_with_camelot(pdf_path, filtered_tables_info)
 
-    # 1종, 2종, 3종에 따라 시트 분류
+    # 1종, 2종, 3종에 따라 시트 분류 (표만 분류)
+    # 기존의 종_sheets에 추가하지 않음. 새로운 sheets_dict을 생성
+    tables_sheets = {
+        "1종": [],
+        "2종": [],
+        "3종": []
+    }
+
     for table in tables:
         title = table['title']
         page = table['page']
         if "1종" in title:
-            sheets["1종"].append(table)
+            tables_sheets["1종"].append(table)
         elif "2종" in title:
-            sheets["2종"].append(table)
+            tables_sheets["2종"].append(table)
         elif "3종" in title:
-            sheets["3종"].append(table)
+            tables_sheets["3종"].append(table)
 
     # 엑셀로 저장
-    save_tables_to_excel(sheets, output_excel_path, document_title=None)
+    # 별도의 시트로 저장
+    if any(tables_sheets.values()):
+        save_tables_to_excel(tables_sheets, output_excel_path, document_title=None)
+    else:
+        print("1종, 2종, 3종에 해당하는 표가 없습니다.")
 
     print(f"All processed tables have been saved to {output_excel_path}")
 
