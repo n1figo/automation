@@ -28,14 +28,13 @@ def extract_text_with_positions(pdf_path):
         return text_chunks
 
 def preprocess_text(text):
-    # 공백 및 특수문자 제거, 소문자로 변환
-    text = re.sub(r'\s+', '', text)
-    text = re.sub(r'[^\w]', '', text)
+    # 특수문자 및 숫자 제거, 공백 제거, 소문자로 변환
+    text = re.sub(r'[\s\W\d_]+', '', text)
     text = text.lower()
     return text
 
 def detect_table_boundaries(text_chunks):
-    start_patterns = [r'표\s*\d+', r'선택\s*특약', r'상해\s*관련\s*특약', r'질병\s*관련\s*특약', r'\[1\s*종\]', r'\[2\s*종\]', r'\[3\s*종\]']
+    start_patterns = [r'표\s*\d+', r'선택\s*특약', r'상해관련\s*특약', r'질병관련\s*특약', r'\[1\s*종\]', r'\[2\s*종\]', r'\[3\s*종\]']
     end_patterns = [r'합\s*계', r'총\s*계', r'주\s*\)', r'※', r'결\s*론']
 
     tables = []
@@ -215,22 +214,28 @@ def create_index(chunks):
     model = SentenceTransformer('distiluse-base-multilingual-cased')
     embeddings = model.encode(chunks)
 
+    # 임베딩 정규화
+    embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+
     dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
+    index = faiss.IndexFlatIP(dimension)
     index.add(embeddings.astype('float32'))
 
     return index, model
 
-def search(query, index, model, chunks, page_numbers=None, k=5):
+def search(query, index, model, chunks, page_numbers=None, k=10, threshold=0.5):
     query_vector = model.encode([query])
+    query_vector = query_vector / np.linalg.norm(query_vector, axis=1, keepdims=True)
+
     distances, indices = index.search(query_vector.astype('float32'), k)
 
     results = []
-    for idx in indices[0]:
-        result = {'content': chunks[idx]}
-        if page_numbers:
-            result['page'] = page_numbers[idx]
-        results.append(result)
+    for idx, score in zip(indices[0], distances[0]):
+        if score >= threshold:  # 임계값 이상인 경우만 결과에 추가
+            result = {'content': chunks[idx], 'score': score}
+            if page_numbers:
+                result['page'] = page_numbers[idx]
+            results.append(result)
 
     return results
 
@@ -242,8 +247,11 @@ def results_to_dataframe(results, query_type):
 def find_pages_with_keyword(text, keyword, page_numbers):
     pages = []
     words = text.split()
-    for i, (word, page) in enumerate(zip(words, page_numbers)):
-        if keyword in word:
+    preprocessed_keyword = preprocess_text(keyword)
+    preprocessed_words = [preprocess_text(word) for word in words]
+
+    for word, page in zip(preprocessed_words, page_numbers):
+        if preprocessed_keyword in word:
             if page not in pages:
                 pages.append(page)
     return pages
@@ -286,12 +294,12 @@ def main():
 
     # 선택특약 검색
     select_query = "선택특약"
-    select_results = search(select_query, index, model, chunks, page_numbers)
+    select_results = search(select_query, index, model, chunks, page_numbers, k=10, threshold=0.5)
     select_df = results_to_dataframe(select_results, "선택특약")
 
-    # 상해관련특약 검색
-    injury_query = "상해관련특약"
-    injury_results = search(injury_query, index, model, chunks, page_numbers)
+    # 상해관련 특약 검색
+    injury_query = "상해관련 특약"
+    injury_results = search(injury_query, index, model, chunks, page_numbers, k=10, threshold=0.5)
     injury_df = results_to_dataframe(injury_results, "상해관련특약")
 
     # 결과 합치기
@@ -305,11 +313,11 @@ def main():
 
     # 키워드가 포함된 페이지 찾기 및 출력
     select_pages = find_pages_with_keyword(full_text, "선택특약", page_numbers)
-    injury_pages = find_pages_with_keyword(full_text, "상해관련특약", page_numbers)
+    injury_pages = find_pages_with_keyword(full_text, "상해관련 특약", page_numbers)
     injury_special_pages = find_pages_with_keyword(full_text, "상해관련 특별약관", page_numbers)
 
     print("선택특약이 포함된 페이지:", select_pages)
-    print("상해관련특약이 포함된 페이지:", injury_pages)
+    print("상해관련 특약이 포함된 페이지:", injury_pages)
     print("상해관련 특별약관이 포함된 페이지:", injury_special_pages)
 
     # 선택특약이 있는 페이지의 텍스트를 txt 파일로 저장
