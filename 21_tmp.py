@@ -8,10 +8,9 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
-from difflib import SequenceMatcher
-import pytesseract
-from PIL import Image
-import sys
+from sentence_transformers import SentenceTransformer
+import faiss
+import numpy as np
 
 def extract_text_with_positions(pdf_path):
     with open(pdf_path, 'rb') as file:
@@ -26,7 +25,7 @@ def extract_text_with_positions(pdf_path):
                     'page': page_num + 1,
                     'line': line_num + 1
                 })
-    return text_chunks
+        return text_chunks
 
 def preprocess_text(text):
     # 공백 및 특수문자 제거, 소문자로 변환
@@ -70,40 +69,27 @@ def detect_table_boundaries(text_chunks):
 
     return tables
 
-def extract_text_with_ocr(page):
-    pix = page.get_pixmap()
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    text = pytesseract.image_to_string(img, lang='kor')
-    return text
+def extract_text_from_page(page):
+    return page.get_text("text")
 
-def extract_text_from_page(page, use_ocr=False):
-    if use_ocr:
-        return extract_text_with_ocr(page)
-    else:
-        return page.get_text("text")
-
-def extract_text_above_bbox(page, bbox, use_ocr=False):
+def extract_text_above_bbox(page, bbox):
     x0, y0, x1, y1 = bbox  # bbox: (x0, y0, x1, y1)
-    if use_ocr:
-        text = extract_text_with_ocr(page)
-        return text.strip()
+    text_blocks = page.get_text("blocks")
+    # 테이블 bbox의 y0보다 위에 있는 텍스트 블록 중 가장 아래에 있는 것 선택
+    texts_above = []
+    for block in text_blocks:
+        if len(block) >= 5:
+            bx0, by0, bx1, by1, text = block[:5]
+            if by1 <= y0:  # 블록의 아래쪽 y좌표가 테이블의 위쪽 y좌표보다 작거나 같으면
+                texts_above.append((by1, text))
+    if texts_above:
+        # y 좌표가 가장 큰 (테이블 바로 위에 있는) 텍스트 선택
+        texts_above.sort(reverse=True)
+        return texts_above[0][1].strip()
     else:
-        text_blocks = page.get_text("blocks")
-        # 테이블 bbox의 y0보다 위에 있는 텍스트 블록 중 가장 아래에 있는 것 선택
-        texts_above = []
-        for block in text_blocks:
-            if len(block) >= 5:
-                bx0, by0, bx1, by1, text = block[:5]
-                if by1 <= y0:  # 블록의 아래쪽 y좌표가 테이블의 위쪽 y좌표보다 작거나 같으면
-                    texts_above.append((by1, text))
-        if texts_above:
-            # y 좌표가 가장 큰 (테이블 바로 위에 있는) 텍스트 선택
-            texts_above.sort(reverse=True)
-            return texts_above[0][1].strip()
-        else:
-            return "제목 없음"
+        return "제목 없음"
 
-def extract_tables_with_camelot(pdf_path, tables_info, use_ocr=False):
+def extract_tables_with_camelot(pdf_path, tables_info):
     all_tables = []
     doc = fitz.open(pdf_path)
     for table_info in tables_info:
@@ -124,7 +110,7 @@ def extract_tables_with_camelot(pdf_path, tables_info, use_ocr=False):
         first_page_number = pages[0] - 1  # fitz 모듈은 0부터 시작
         page = doc.load_page(first_page_number)
         table_bbox = tables[0]._bbox  # 첫 번째 테이블의 bbox 사용
-        text_above_table = extract_text_above_bbox(page, table_bbox, use_ocr=use_ocr)
+        text_above_table = extract_text_above_bbox(page, table_bbox)
 
         all_tables.append({
             'dataframe': combined_df,
@@ -217,10 +203,55 @@ def save_to_excel(df_dict, output_path, title=None):
     wb.save(output_path)
     print(f"Data saved to '{output_path}'")
 
+def split_text_into_chunks(text, chunk_size=200, overlap=50):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
+    return chunks
+
+def create_index(chunks):
+    model = SentenceTransformer('distiluse-base-multilingual-cased')
+    embeddings = model.encode(chunks)
+
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings.astype('float32'))
+
+    return index, model
+
+def search(query, index, model, chunks, page_numbers=None, k=5):
+    query_vector = model.encode([query])
+    distances, indices = index.search(query_vector.astype('float32'), k)
+
+    results = []
+    for idx in indices[0]:
+        result = {'content': chunks[idx]}
+        if page_numbers:
+            result['page'] = page_numbers[idx]
+        results.append(result)
+
+    return results
+
+def results_to_dataframe(results, query_type):
+    df = pd.DataFrame(results)
+    df['type'] = query_type
+    return df
+
+def find_pages_with_keyword(text, keyword, page_numbers):
+    pages = []
+    words = text.split()
+    for i, (word, page) in enumerate(zip(words, page_numbers)):
+        if keyword in word:
+            if page not in pages:
+                pages.append(page)
+    return pages
+
 def main():
     uploads_folder = "/workspaces/automation/uploads"
     output_folder = "/workspaces/automation/output"
-    
+
     os.makedirs(output_folder, exist_ok=True)
 
     pdf_files = [f for f in os.listdir(uploads_folder) if f.endswith('.pdf')]
@@ -234,15 +265,70 @@ def main():
 
     print(f"Processing PDF file: {pdf_file}")
 
-    # 텍스트 추출 방법 선택 (True: OCR 사용, False: 일반 텍스트 추출)
-    use_ocr = False
-
     text_chunks = extract_text_with_positions(pdf_path)
     tables = detect_table_boundaries(text_chunks)
 
     doc = fitz.open(pdf_path)
 
-    # 각 타입별 테이블 정보 수집
+    # 전체 텍스트와 페이지 번호 추출
+    with open(pdf_path, 'rb') as file:
+        reader = PyPDF2.PdfReader(file)
+        full_text = ""
+        page_numbers = []
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text()
+            full_text += page_text + "\n"
+            page_numbers.extend([i+1] * len(page_text.split()))
+
+    # 텍스트 청크 생성 및 인덱스 구축
+    chunks = split_text_into_chunks(full_text)
+    index, model = create_index(chunks)
+
+    # 선택특약 검색
+    select_query = "선택특약"
+    select_results = search(select_query, index, model, chunks, page_numbers)
+    select_df = results_to_dataframe(select_results, "선택특약")
+
+    # 상해관련특약 검색
+    injury_query = "상해관련특약"
+    injury_results = search(injury_query, index, model, chunks, page_numbers)
+    injury_df = results_to_dataframe(injury_results, "상해관련특약")
+
+    # 결과 합치기
+    final_df = pd.concat([select_df, injury_df], ignore_index=True)
+
+    # 엑셀 파일로 저장
+    search_output_path = os.path.join(output_folder, "insurance_special_clauses_search_results.xlsx")
+    final_df.to_excel(search_output_path, index=False, engine='openpyxl')
+
+    print(f"검색 결과가 {search_output_path}에 저장되었습니다.")
+
+    # 키워드가 포함된 페이지 찾기 및 출력
+    select_pages = find_pages_with_keyword(full_text, "선택특약", page_numbers)
+    injury_pages = find_pages_with_keyword(full_text, "상해관련특약", page_numbers)
+    injury_special_pages = find_pages_with_keyword(full_text, "상해관련 특별약관", page_numbers)
+
+    print("선택특약이 포함된 페이지:", select_pages)
+    print("상해관련특약이 포함된 페이지:", injury_pages)
+    print("상해관련 특별약관이 포함된 페이지:", injury_special_pages)
+
+    # 선택특약이 있는 페이지의 텍스트를 txt 파일로 저장
+    for page_num in select_pages:
+        page = doc.load_page(page_num - 1)
+        text = extract_text_from_page(page)
+        txt_output_path = os.path.join(output_folder, f"page_{page_num}_text.txt")
+        with open(txt_output_path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        print(f"Page {page_num}의 텍스트가 {txt_output_path}에 저장되었습니다.")
+
+    # '상해관련 특약'이 파싱되었는지 확인
+    if injury_pages or injury_special_pages:
+        print("'상해관련 특약'이 문서에서 발견되었습니다.")
+    else:
+        print("'상해관련 특약'이 문서에서 발견되지 않았습니다.")
+
+    # 기존 테이블 처리 및 엑셀 저장
+    df_dict = {}
     types = ["[1종]", "[2종]", "[3종]", "선택특약", "상해관련특약", "질병관련특약"]
     type_tables_info = {t: [] for t in types}
 
@@ -253,30 +339,16 @@ def main():
                 type_tables_info[t].append(table)
                 break
 
-    # 선택특약 페이지 출력
-    if type_tables_info['선택특약']:
-        선택특약_pages = [page for table in type_tables_info['선택특약'] for page in table['pages']]
-        print(f"선택특약 is on pages: {sorted(set(선택특약_pages))}")
-
-        # 선택특약 페이지의 텍스트 출력
-        for page_num in sorted(set(선택특약_pages)):
-            page = doc.load_page(page_num - 1)  # fitz는 0부터 시작
-            text = extract_text_from_page(page, use_ocr=use_ocr)
-            print(f"Page {page_num} Text:\n{text}")
-    else:
-        print("선택특약 정보를 찾을 수 없습니다.")
-
-    df_dict = {}
     for insurance_type in ["[1종]", "[2종]", "[3종]", "선택특약", "상해관련특약", "질병관련특약"]:
         if type_tables_info[insurance_type]:
             type_tables = type_tables_info[insurance_type]
-            camelot_tables = extract_tables_with_camelot(pdf_path, type_tables, use_ocr=use_ocr)
+            camelot_tables = extract_tables_with_camelot(pdf_path, type_tables)
             df = process_tables(camelot_tables)
             df_dict[insurance_type.strip('[]')] = df
 
     # 첫 번째 페이지에서 제목 추출
     first_page = doc.load_page(0)
-    page_text = extract_text_from_page(first_page, use_ocr=use_ocr)
+    page_text = extract_text_from_page(first_page)
     title = page_text.strip().split('\n')[0]
     print(f"Extracted title: {title}")
 
