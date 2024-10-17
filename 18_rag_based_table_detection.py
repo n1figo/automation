@@ -4,8 +4,6 @@ import pandas as pd
 import fitz  # PyMuPDF
 import os
 import re
-from sentence_transformers import SentenceTransformer
-import faiss
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font
 from openpyxl.utils import get_column_letter
@@ -63,30 +61,57 @@ def detect_table_boundaries(text_chunks):
 
 def extract_tables_with_camelot(pdf_path, tables_info):
     all_tables = []
+    doc = fitz.open(pdf_path)
     for table_info in tables_info:
         pages = table_info['pages']
         pages_str = ','.join(map(str, pages))
         print(f"Extracting table from pages {pages_str} using Camelot...")
         tables = camelot.read_pdf(pdf_path, pages=pages_str, flavor='lattice')
+
         # 여러 페이지에서 추출된 테이블을 하나로 병합
         combined_df = pd.DataFrame()
         for table in tables:
             combined_df = pd.concat([combined_df, table.df], ignore_index=True)
+
+        # 표 바로 위의 텍스트 추출
+        first_page_number = pages[0] - 1  # fitz 모듈은 0부터 시작
+        page = doc.load_page(first_page_number)
+        table_bbox = tables[0]._bbox  # 첫 번째 테이블의 bbox 사용
+        text_above_table = extract_text_above_bbox(page, table_bbox)
+
         all_tables.append({
             'dataframe': combined_df,
-            'title': table_info['context'][0]['text'],
+            'title': text_above_table.strip(),
             'pages': pages
         })
     print(f"Found {len(all_tables)} tables in total")
     return all_tables
+
+def extract_text_above_bbox(page, bbox):
+    x0, y0, x1, y1 = bbox  # bbox: (x0, y0, x1, y1)
+    text_blocks = page.get_text("blocks")
+    # 테이블 bbox의 y0보다 위에 있는 텍스트 블록 중 가장 아래에 있는 것 선택
+    texts_above = []
+    for block in text_blocks:
+        bx0, by0, bx1, by1, text, block_no = block
+        if by1 <= y0:  # 블록의 아래쪽 y좌표가 테이블의 위쪽 y좌표보다 작거나 같으면
+            texts_above.append((by1, text))
+    if texts_above:
+        # y 좌표가 가장 큰 (테이블 바로 위에 있는) 텍스트 선택
+        texts_above.sort(reverse=True)
+        return texts_above[0][1]
+    else:
+        return "제목 없음"
 
 def process_tables(all_tables):
     processed_data = []
     for i, table_info in enumerate(all_tables):
         df = table_info['dataframe']
         title = table_info['title']
+        pages = table_info['pages']
         df['Table_Number'] = i + 1
         df['Table_Title'] = title
+        df['Pages'] = ', '.join(map(str, pages))
         processed_data.append(df)
     return pd.concat(processed_data, ignore_index=True)
 
@@ -112,6 +137,8 @@ def save_to_excel(df_dict, output_path, title=None):
         grouped = df.groupby('Table_Number')
         for table_number, group in grouped:
             table_title = group['Table_Title'].iloc[0]
+            pages = group['Pages'].iloc[0]
+
             # 테이블 제목 추가
             ws.cell(row=current_row, column=1, value=table_title)
             ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(df.columns))
@@ -120,11 +147,22 @@ def save_to_excel(df_dict, output_path, title=None):
             ws.row_dimensions[current_row].height = 20
             current_row += 1
 
+            # 헤더 바로 위에 표 위의 텍스트 추가 (폰트 크게, 볼드체)
+            header_title = f"{table_title}"
+            ws.cell(row=current_row, column=1, value=header_title)
+            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(df.columns))
+            header_cell = ws.cell(row=current_row, column=1)
+            header_cell.font = Font(size=12, bold=True)
+            ws.row_dimensions[current_row].height = 18
+            current_row += 1
+
             # 테이블 데이터 작성
-            for r_idx, row in enumerate(dataframe_to_rows(group.drop(['Table_Number', 'Table_Title'], axis=1), index=False, header=True), start=current_row):
+            for r_idx, row in enumerate(dataframe_to_rows(group.drop(['Table_Number', 'Table_Title', 'Pages'], axis=1), index=False, header=True), start=current_row):
                 for c_idx, value in enumerate(row, start=1):
                     cell = ws.cell(row=r_idx, column=c_idx, value=value)
                     cell.alignment = Alignment(wrap_text=True, vertical='top')
+                # 페이지 번호를 오른편에 추가
+                ws.cell(row=r_idx, column=len(row)+1, value=pages)
             current_row = r_idx + 2  # 각 테이블 후에 공백 추가
 
         # 열 너비 조정
