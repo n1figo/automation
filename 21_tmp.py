@@ -8,6 +8,10 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
+from difflib import SequenceMatcher
+import pytesseract
+from PIL import Image
+import sys
 
 def extract_text_with_positions(pdf_path):
     with open(pdf_path, 'rb') as file:
@@ -24,8 +28,15 @@ def extract_text_with_positions(pdf_path):
                 })
     return text_chunks
 
+def preprocess_text(text):
+    # 공백 및 특수문자 제거, 소문자로 변환
+    text = re.sub(r'\s+', '', text)
+    text = re.sub(r'[^\w]', '', text)
+    text = text.lower()
+    return text
+
 def detect_table_boundaries(text_chunks):
-    start_patterns = [r'표\s*\d+', r'선택특약\s*내용', r'상해관련\s*특약', r'질병관련\s*특약']
+    start_patterns = [r'표\s*\d+', r'선택\s*특약', r'상해\s*관련\s*특약', r'질병\s*관련\s*특약', r'\[1\s*종\]', r'\[2\s*종\]', r'\[3\s*종\]']
     end_patterns = [r'합\s*계', r'총\s*계', r'주\s*\)', r'※', r'결\s*론']
 
     tables = []
@@ -59,25 +70,40 @@ def detect_table_boundaries(text_chunks):
 
     return tables
 
-def extract_text_above_bbox(page, bbox):
-    x0, y0, x1, y1 = bbox  # bbox: (x0, y0, x1, y1)
-    text_blocks = page.get_text("blocks")
-    # 테이블 bbox의 y0보다 위에 있는 텍스트 블록 중 가장 아래에 있는 것 선택
-    texts_above = []
-    for block in text_blocks:
-        if len(block) >= 5:
-            bx0, by0, bx1, by1, text = block[:5]
-            # 또는 bx0, by0, bx1, by1, text, *_ = block
-            if by1 <= y0:  # 블록의 아래쪽 y좌표가 테이블의 위쪽 y좌표보다 작거나 같으면
-                texts_above.append((by1, text))
-    if texts_above:
-        # y 좌표가 가장 큰 (테이블 바로 위에 있는) 텍스트 선택
-        texts_above.sort(reverse=True)
-        return texts_above[0][1]
-    else:
-        return "제목 없음"
+def extract_text_with_ocr(page):
+    pix = page.get_pixmap()
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    text = pytesseract.image_to_string(img, lang='kor')
+    return text
 
-def extract_tables_with_camelot(pdf_path, tables_info):
+def extract_text_from_page(page, use_ocr=False):
+    if use_ocr:
+        return extract_text_with_ocr(page)
+    else:
+        return page.get_text("text")
+
+def extract_text_above_bbox(page, bbox, use_ocr=False):
+    x0, y0, x1, y1 = bbox  # bbox: (x0, y0, x1, y1)
+    if use_ocr:
+        text = extract_text_with_ocr(page)
+        return text.strip()
+    else:
+        text_blocks = page.get_text("blocks")
+        # 테이블 bbox의 y0보다 위에 있는 텍스트 블록 중 가장 아래에 있는 것 선택
+        texts_above = []
+        for block in text_blocks:
+            if len(block) >= 5:
+                bx0, by0, bx1, by1, text = block[:5]
+                if by1 <= y0:  # 블록의 아래쪽 y좌표가 테이블의 위쪽 y좌표보다 작거나 같으면
+                    texts_above.append((by1, text))
+        if texts_above:
+            # y 좌표가 가장 큰 (테이블 바로 위에 있는) 텍스트 선택
+            texts_above.sort(reverse=True)
+            return texts_above[0][1].strip()
+        else:
+            return "제목 없음"
+
+def extract_tables_with_camelot(pdf_path, tables_info, use_ocr=False):
     all_tables = []
     doc = fitz.open(pdf_path)
     for table_info in tables_info:
@@ -85,6 +111,9 @@ def extract_tables_with_camelot(pdf_path, tables_info):
         pages_str = ','.join(map(str, pages))
         print(f"Extracting table from pages {pages_str} using Camelot...")
         tables = camelot.read_pdf(pdf_path, pages=pages_str, flavor='lattice')
+
+        if not tables:
+            continue
 
         # 여러 페이지에서 추출된 테이블을 하나로 병합
         combined_df = pd.DataFrame()
@@ -95,11 +124,11 @@ def extract_tables_with_camelot(pdf_path, tables_info):
         first_page_number = pages[0] - 1  # fitz 모듈은 0부터 시작
         page = doc.load_page(first_page_number)
         table_bbox = tables[0]._bbox  # 첫 번째 테이블의 bbox 사용
-        text_above_table = extract_text_above_bbox(page, table_bbox)
+        text_above_table = extract_text_above_bbox(page, table_bbox, use_ocr=use_ocr)
 
         all_tables.append({
             'dataframe': combined_df,
-            'title': text_above_table.strip(),
+            'title': text_above_table,
             'pages': pages
         })
     print(f"Found {len(all_tables)} tables in total")
@@ -115,7 +144,10 @@ def process_tables(all_tables):
         df['Table_Title'] = title
         df['Pages'] = ', '.join(map(str, pages))
         processed_data.append(df)
-    return pd.concat(processed_data, ignore_index=True)
+    if processed_data:
+        return pd.concat(processed_data, ignore_index=True)
+    else:
+        return pd.DataFrame()
 
 def save_to_excel(df_dict, output_path, title=None):
     wb = Workbook()
@@ -136,36 +168,41 @@ def save_to_excel(df_dict, output_path, title=None):
 
         current_row = start_row
         # 'Table_Number'로 그룹핑하여 각 테이블을 구분
-        grouped = df.groupby('Table_Number')
-        for table_number, group in grouped:
-            table_title = group['Table_Title'].iloc[0]
-            pages = group['Pages'].iloc[0]
+        if 'Table_Number' in df.columns:
+            grouped = df.groupby('Table_Number')
+            for table_number, group in grouped:
+                table_title = group['Table_Title'].iloc[0]
+                pages = group['Pages'].iloc[0]
 
-            # 테이블 제목 추가
-            ws.cell(row=current_row, column=1, value=table_title)
-            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(df.columns))
-            title_cell = ws.cell(row=current_row, column=1)
-            title_cell.font = Font(size=14, bold=True)
-            ws.row_dimensions[current_row].height = 20
+                # 테이블 제목 추가
+                ws.cell(row=current_row, column=1, value=table_title)
+                ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(df.columns))
+                title_cell = ws.cell(row=current_row, column=1)
+                title_cell.font = Font(size=14, bold=True)
+                ws.row_dimensions[current_row].height = 20
+                current_row += 1
+
+                # 헤더 바로 위에 표 위의 텍스트 추가 (폰트 크게, 볼드체)
+                header_title = f"{table_title}"
+                ws.cell(row=current_row, column=1, value=header_title)
+                ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(df.columns))
+                header_cell = ws.cell(row=current_row, column=1)
+                header_cell.font = Font(size=12, bold=True)
+                ws.row_dimensions[current_row].height = 18
+                current_row += 1
+
+                # 테이블 데이터 작성
+                for r_idx, row in enumerate(dataframe_to_rows(group.drop(['Table_Number', 'Table_Title', 'Pages'], axis=1), index=False, header=True), start=current_row):
+                    for c_idx, value in enumerate(row, start=1):
+                        cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                        cell.alignment = Alignment(wrap_text=True, vertical='top')
+                    # 페이지 번호를 오른편에 추가
+                    ws.cell(row=r_idx, column=len(row)+1, value=pages)
+                current_row = r_idx + 2  # 각 테이블 후에 공백 추가
+        else:
+            # 데이터프레임이 비어 있는 경우
+            ws.cell(row=current_row, column=1, value="데이터 없음")
             current_row += 1
-
-            # 헤더 바로 위에 표 위의 텍스트 추가 (폰트 크게, 볼드체)
-            header_title = f"{table_title}"
-            ws.cell(row=current_row, column=1, value=header_title)
-            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(df.columns))
-            header_cell = ws.cell(row=current_row, column=1)
-            header_cell.font = Font(size=12, bold=True)
-            ws.row_dimensions[current_row].height = 18
-            current_row += 1
-
-            # 테이블 데이터 작성
-            for r_idx, row in enumerate(dataframe_to_rows(group.drop(['Table_Number', 'Table_Title', 'Pages'], axis=1), index=False, header=True), start=current_row):
-                for c_idx, value in enumerate(row, start=1):
-                    cell = ws.cell(row=r_idx, column=c_idx, value=value)
-                    cell.alignment = Alignment(wrap_text=True, vertical='top')
-                # 페이지 번호를 오른편에 추가
-                ws.cell(row=r_idx, column=len(row)+1, value=pages)
-            current_row = r_idx + 2  # 각 테이블 후에 공백 추가
 
         # 열 너비 조정
         for column in ws.columns:
@@ -197,17 +234,22 @@ def main():
 
     print(f"Processing PDF file: {pdf_file}")
 
+    # 텍스트 추출 방법 선택 (True: OCR 사용, False: 일반 텍스트 추출)
+    use_ocr = False
+
     text_chunks = extract_text_with_positions(pdf_path)
     tables = detect_table_boundaries(text_chunks)
 
+    doc = fitz.open(pdf_path)
+
     # 각 타입별 테이블 정보 수집
-    types = ["[1종]", "[2종]", "[3종]", "선택특약"]
+    types = ["[1종]", "[2종]", "[3종]", "선택특약", "상해관련특약", "질병관련특약"]
     type_tables_info = {t: [] for t in types}
 
     for table in tables:
         table_text = ' '.join([chunk['text'] for chunk in table['context']])
         for t in types:
-            if t in table_text:
+            if re.search(preprocess_text(t), preprocess_text(table_text)):
                 type_tables_info[t].append(table)
                 break
 
@@ -216,25 +258,25 @@ def main():
         선택특약_pages = [page for table in type_tables_info['선택특약'] for page in table['pages']]
         print(f"선택특약 is on pages: {sorted(set(선택특약_pages))}")
 
+        # 선택특약 페이지의 텍스트 출력
+        for page_num in sorted(set(선택특약_pages)):
+            page = doc.load_page(page_num - 1)  # fitz는 0부터 시작
+            text = extract_text_from_page(page, use_ocr=use_ocr)
+            print(f"Page {page_num} Text:\n{text}")
+    else:
+        print("선택특약 정보를 찾을 수 없습니다.")
+
     df_dict = {}
-    for insurance_type in ["[1종]", "[2종]", "[3종]"]:
+    for insurance_type in ["[1종]", "[2종]", "[3종]", "선택특약", "상해관련특약", "질병관련특약"]:
         if type_tables_info[insurance_type]:
             type_tables = type_tables_info[insurance_type]
-            camelot_tables = extract_tables_with_camelot(pdf_path, type_tables)
+            camelot_tables = extract_tables_with_camelot(pdf_path, type_tables, use_ocr=use_ocr)
             df = process_tables(camelot_tables)
             df_dict[insurance_type.strip('[]')] = df
 
-    # 선택특약 처리
-    if type_tables_info['선택특약']:
-        type_tables = type_tables_info['선택특약']
-        camelot_tables = extract_tables_with_camelot(pdf_path, type_tables)
-        df = process_tables(camelot_tables)
-        df_dict['선택특약'] = df
-
     # 첫 번째 페이지에서 제목 추출
-    doc = fitz.open(pdf_path)
-    first_page = doc[0]
-    page_text = first_page.get_text("text")
+    first_page = doc.load_page(0)
+    page_text = extract_text_from_page(first_page, use_ocr=use_ocr)
     title = page_text.strip().split('\n')[0]
     print(f"Extracted title: {title}")
 
