@@ -1,3 +1,6 @@
+# 1종, 2종, 3종이 있는 위치는 정확히 찾음
+# 테이블 끝까지 파싱필요
+
 import PyPDF2
 import camelot
 import pandas as pd
