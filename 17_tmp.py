@@ -20,39 +20,19 @@ def extract_text_with_positions(pdf_path):
     return texts_by_page
 
 def find_종_pages(texts_by_page, start_page=1, end_page=100):
-    종_pages = {"1종": [], "2종": [], "3종": []}
+    종_pages = {"[1종]": [], "[2종]": [], "[3종]": []}
     pattern = re.compile(r'\[(\d)종\]')
     
     for page_num, text in texts_by_page.items():
         if start_page <= page_num <= end_page:
             matches = pattern.findall(text)
             for match in matches:
-                종 = f"{match}종"
+                종 = f"[{match}종]"
                 if 종 in 종_pages:
                     종_pages[종].append(page_num)
+                    print(f"{종} 패턴을 {page_num}페이지에서 발견했습니다.")
     
     return 종_pages
-
-def validate_종_info(texts_by_page, 종_pages):
-    validated_pages = {"1종": [], "2종": [], "3종": []}
-    for 종, pages in 종_pages.items():
-        for page in pages:
-            text = texts_by_page.get(page, "")
-            if re.search(rf'\[{종}\].*가입기준', text, re.DOTALL):
-                validated_pages[종].append(page)
-    return validated_pages
-
-def extract_종_info(texts_by_page, validated_pages):
-    종_info = {}
-    for 종, pages in validated_pages.items():
-        for page in pages:
-            text = texts_by_page.get(page, "")
-            match = re.search(rf'\[{종}\](.*?)가입기준.*?:(.+)', text, re.DOTALL)
-            if match:
-                종_type = match.group(1).strip()
-                가입기준 = match.group(2).strip()
-                종_info[종] = {"type": 종_type, "가입기준": 가입기준, "page": page}
-    return 종_info
 
 def detect_table_boundaries(texts_by_page):
     tables = []
@@ -108,27 +88,13 @@ def extract_tables_with_camelot(pdf_path, tables_info):
     print(f"Found {len(all_tables)} tables in total")
     return all_tables
 
-def process_tables(all_tables):
-    processed_data = []
-    for i, table_info in enumerate(all_tables):
-        df = table_info['dataframe']
-        title = table_info['title']
-        page = table_info['page']
-        df['Table_Number'] = i + 1
-        df['Table_Title'] = title
-        df['Page'] = page
-        processed_data.append(df)
-    if processed_data:
-        return pd.concat(processed_data, ignore_index=True)
-    else:
-        return pd.DataFrame()
-
 def save_tables_to_excel(tables_dict, output_path, document_title=None):
     wb = Workbook()
     wb.remove(wb.active)
     
     for sheet_name, tables in tables_dict.items():
-        ws = wb.create_sheet(title=sheet_name)
+        safe_sheet_name = sheet_name.replace('[', '').replace(']', '')
+        ws = wb.create_sheet(title=safe_sheet_name)
         current_row = 1
 
         if document_title:
@@ -139,7 +105,7 @@ def save_tables_to_excel(tables_dict, output_path, document_title=None):
 
         for idx, table_info in enumerate(tables):
             if 'dataframe' not in table_info:
-                print(f"Skipping table in sheet '{sheet_name}' as 'dataframe' key is missing.")
+                print(f"Skipping table in sheet '{safe_sheet_name}' as 'dataframe' key is missing.")
                 continue
 
             df = table_info['dataframe']
@@ -182,16 +148,8 @@ def main():
     print(f"Processing PDF file: {pdf_file}")
 
     texts_by_page = extract_text_with_positions(pdf_path)
-    종_pages = find_종_pages(texts_by_page, start_page=1, end_page=100)
-    validated_pages = validate_종_info(texts_by_page, 종_pages)
-    종_info = extract_종_info(texts_by_page, validated_pages)
-
-    for 종, info in 종_info.items():
-        print(f"{종} 정보:")
-        print(f"  페이지: {info['page']}")
-        print(f"  유형: {info['type']}")
-        print(f"  가입기준: {info['가입기준']}")
-        print()
+    print("\n--- 종 페이지 검색 결과 ---")
+    find_종_pages(texts_by_page, start_page=1, end_page=100)
 
     tables_info = detect_table_boundaries(texts_by_page)
     tables = extract_tables_with_camelot(pdf_path, tables_info)
@@ -205,11 +163,11 @@ def main():
 
     for table in tables:
         title = table['title']
-        if "1종" in title:
+        if "[1종]" in title:
             tables_sheets["1종"].append(table)
-        elif "2종" in title:
+        elif "[2종]" in title:
             tables_sheets["2종"].append(table)
-        elif "3종" in title:
+        elif "[3종]" in title:
             tables_sheets["3종"].append(table)
         else:
             tables_sheets["기타"].append(table)
