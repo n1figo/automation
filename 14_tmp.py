@@ -84,7 +84,7 @@ def find_end_phrases_rag(texts_by_page, tokenizer, model):
     return results
 
 def main():
-    pdf_path = "path/to/your/pdf/file.pdf"
+    pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
     texts_by_page = load_pdf_text(pdf_path)
 
     print("방법 1: 정규화된 텍스트를 사용한 검색")
