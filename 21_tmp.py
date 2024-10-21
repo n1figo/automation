@@ -94,7 +94,15 @@ def extract_tables_with_camelot(pdf_path, tables_info):
     for table_info in tables_info:
         pages = table_info['pages']
         pages_str = ','.join(map(str, pages))
-        print(f"Extracting table from pages {pages_str} using Camelot...")
+        print(f"Extracting table from pag
+        
+        
+        
+        
+        
+        
+        
+        s {pages_str} using Camelot...")
         tables = camelot.read_pdf(pdf_path, pages=pages_str, flavor='lattice')
 
         if not tables:
