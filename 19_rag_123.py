@@ -38,7 +38,11 @@ def extract_tables_with_camelot(pdf_path, page_numbers):
     for page in page_numbers:
         print(f"Extracting tables from page {page} using Camelot...")
         tables = camelot.read_pdf(pdf_path, pages=str(page), flavor='lattice')
-        all_tables.extend(tables)
+        all_tables.extend(tables
+        
+        
+        
+        )
     print(f"Found {len(all_tables)} tables in total")
     return all_tables
 
