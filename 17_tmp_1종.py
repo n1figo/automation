@@ -59,7 +59,7 @@ def main():
     texts_by_page = extract_text_from_pdf(pdf_path)
 
     # RAG를 사용하여 "1종" 관련 페이지 찾기
-    relevant_pages = find_relevant_pages(texts_by_page, "1종")
+    relevant_pages = find_relevant_pages(texts_by_page, "[1종]")
     print(f"'1종' 관련 페이지: {relevant_pages}")
 
     # 관련 페이지와 그 다음 페이지에서 표 추출
