@@ -347,6 +347,7 @@ def main():
                 type_tables_info[t].append(table)
                 break
 
+
     for insurance_type in ["[1종]", "[2종]", "[3종]", "선택특약", "상해관련특약", "질병관련특약"]:
         if type_tables_info[insurance_type]:
             type_tables = type_tables_info[insurance_type]
