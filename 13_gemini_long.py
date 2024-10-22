@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 class TableEndDetector:
-    def __init__(self, model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
+    def __init__(self, model_name: str = "beomi/KoAlpaca-350m-v1.1"): # beomi/KoAlpaca-350m-v1.1  # TinyLlama/TinyLlama-1.1B-Chat-v1.0
         """
         Initialize the detector with specified models
         :param model_name: TinyLlama model name
@@ -80,28 +80,68 @@ class TableEndDetector:
         
         return index, texts
 
+    def split_text(self, text: str, max_chunk_size: int = 3000) -> List[str]:
+        """
+        긴 텍스트를 작은 청크로 분할
+        """
+        words = text.split()
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for word in words:
+            if current_length + len(word) + 1 > max_chunk_size:
+                chunks.append(' '.join(current_chunk))
+                current_chunk = [word]
+                current_length = len(word)
+            else:
+                current_chunk.append(word)
+                current_length += len(word) + 1
+                
+        if current_chunk:
+            chunks.append(' '.join(current_chunk))
+        
+        return chunks
+
     def generate_response(self, prompt: str) -> str:
         """
         TinyLlama를 사용하여 응답 생성
         """
         try:
-            # TinyLlama 형식에 맞게 프롬프트 포맷팅
-            formatted_prompt = f"<human>: {prompt}\n<assistant>:"
+            # 긴 텍스트 처리를 위해 청크로 분할
+            chunks = self.split_text(prompt)
+            responses = []
             
-            inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
-            # device_map이 자동으로 처리하므로 .to(device) 불필요
-            outputs = self.model.generate(
-                **inputs,
-                max_length=512,
-                temperature=0.1,
-                top_p=0.95,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
-            )
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # 프롬프트 제거하고 응답만 반환
-            response = response.split("<assistant>:")[-1].strip()
-            return response
+            for chunk in chunks:
+                # TinyLlama 형식에 맞게 프롬프트 포맷팅
+                formatted_prompt = f"<human>: {chunk}\n<assistant>:"
+                
+                # 토큰화 및 길이 제한
+                inputs = self.tokenizer(
+                    formatted_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=4096
+                )
+                
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    temperature=0.1,
+                    top_p=0.95,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+                
+                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                response = response.split("<assistant>:")[-1].strip()
+                
+                if response and response != "없음":
+                    responses.append(response)
+            
+            # 모든 응답 중 가장 관련성 높은 것 선택
+            return responses[0] if responses else "없음"
+            
         except Exception as e:
             logger.error(f"응답 생성 중 오류 발생: {e}")
             return "오류 발생"
