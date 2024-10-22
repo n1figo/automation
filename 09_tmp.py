@@ -198,7 +198,7 @@ def process_pdf_and_save_tables(pdf_path: str, output_path: str):
 def main():
     try:
         # 파일 경로
-        pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+        pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
         output_path = "특약표_combined.xlsx"
         
         if not os.path.exists(pdf_path):
