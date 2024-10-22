@@ -1,6 +1,7 @@
+
 import os
 import re
-import numpy as np  # numpy 임포트 추가
+import numpy as np
 import PyPDF2
 import camelot
 import fitz  # PyMuPDF
@@ -8,398 +9,313 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer
 import faiss
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
+import logging
+from typing import Dict, List, Tuple, Optional, Any
+from datetime import datetime
 
-def extract_text_with_positions(pdf_path):
-    with open(pdf_path, 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
-        text_chunks = []
-        for page_num, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text:
-                lines = text.split('\n')
-                for line_num, line in enumerate(lines):
-                    text_chunks.append({
-                        'text': line,
-                        'page': page_num + 1,
-                        'line': line_num + 1
-                    })
-    return text_chunks
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def preprocess_text(text):
-    # 특수문자 및 공백 제거, 소문자로 변환
-    text = re.sub(r'[\s\W_]+', '', text)
-    text = text.lower()
-    return text
+class TableEndDetector:
+    def __init__(self):
+        """
+        표 끝 부분 검출을 위한 패턴 및 설정 초기화
+        """
+        # 찾고자 하는 패턴 정의
+        self.patterns = {
+            '상해관련': [
+                r'상해관련\s*특약.*?(?:자세한\s*사항은\s*반드시\s*약관을\s*참고하시기\s*바랍니다)',
+                r'상해\s*및\s*질병\s*관련\s*특약.*?(?:자세한\s*사항은\s*반드시\s*약관을\s*참고하시기\s*바랍니다)'
+            ],
+            '질병관련': [
+                r'질병관련\s*특약.*?(?:자세한\s*사항은\s*반드시\s*약관을\s*참고하시기\s*바랍니다)',
+                r'질병\s*및\s*상해\s*관련\s*특약.*?(?:자세한\s*사항은\s*반드시\s*약관을\s*참고하시기\s*바랍니다)'
+            ]
+        }
+        
+        # 다음 섹션 시작을 나타내는 패턴
+        self.next_section_patterns = [
+            r'보험료\s*납입면제\s*관련\s*특약',
+            r'간병\s*관련\s*특약',
+            r'실손의료비\s*보장\s*특약',
+            r'기타\s*특약',
+            r'제\s*\d+\s*장',
+            r'보장내용\s*요약서',
+            r'주요\s*보장내용'
+        ]
 
-def detect_table_boundaries(text_chunks):
-    start_patterns = [
-        r'표\s*\d+',
-        r'선택\s*특약',
-        r'상해관련\s*특약',
-        r'질병관련\s*특약',
-        r'\[1\s*종\]',
-        r'\[2\s*종\]',
-        r'\[3\s*종\]'
-    ]
-    end_patterns = [
-        r'합\s*계',
-        r'총\s*계',
-        r'주\s*\)',
-        r'※',
-        r'결\s*론'
-    ]
+        # 표 구분을 위한 패턴
+        self.table_patterns = {
+            'start': [
+                r'구분',
+                r'보장명',
+                r'급여명',
+                r'보험금의\s*지급사유',
+                r'보험료\s*납입기간',
+                r'보험기간'
+            ],
+            'end': [
+                r'※\s*위\s*내용은\s*약관의\s*일부만을\s*요약한\s*것',
+                r'※\s*기타\s*자세한\s*사항은\s*약관을\s*참고',
+                r'상품내용\s*요약서'
+            ]
+        }
 
-    tables = []
-    table_start = None
+    def find_table_ends(self, texts_by_page: Dict[int, str]) -> Dict[str, List[Tuple[int, str, str]]]:
+        """
+        각 특약 유형별로 표 끝을 찾아서 반환
+        """
+        results = {
+            '상해관련': [],
+            '질병관련': []
+        }
+        
+        found_disease = False  # 질병관련 특약을 찾았는지 표시
+        disease_page = None    # 질병관련 특약이 발견된 페이지
+        
+        sorted_pages = sorted(texts_by_page.keys())
+        
+        for page_num in sorted_pages:
+            text = texts_by_page[page_num]
+            logger.debug(f"페이지 {page_num} 분석 중...")
+            
+            # 질병관련 특약을 찾은 후 다음 섹션이 시작되는지 확인
+            if found_disease and disease_page != page_num:
+                if any(re.search(pattern, text, re.IGNORECASE | re.MULTILINE) 
+                      for pattern in self.next_section_patterns):
+                    logger.info(f"페이지 {page_num}에서 다음 섹션 시작 발견. 검색 종료")
+                    break
 
-    for i, chunk in enumerate(text_chunks):
-        text = chunk['text']
+            for category, patterns in self.patterns.items():
+                for pattern in patterns:
+                    matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+                    for match in matches:
+                        found_text = match.group(0).strip()
+                        # 표 컨텍스트 확인
+                        if self.verify_table_context(text, match.start(), match.end()):
+                            context = self.get_context(text, match.start(), match.end(), window=300)
+                            results[category].append((page_num, found_text, context))
+                            logger.info(f"{category} 표 끝 발견 - 페이지 {page_num}")
+                            
+                            if category == '질병관련':
+                                found_disease = True
+                                disease_page = page_num
+        
+        return results
 
-        if table_start is None and any(re.search(pattern, text) for pattern in start_patterns):
-            table_start = i
-            continue
+    def verify_table_context(self, text: str, start: int, end: int, window: int = 500) -> bool:
+        """
+        발견된 패턴이 실제로 표의 일부인지 확인
+        """
+        context = self.get_context(text, start, end, window)
+        
+        # 표 시작 패턴 확인
+        has_start = any(re.search(pattern, context, re.IGNORECASE) 
+                       for pattern in self.table_patterns['start'])
+        
+        # 표 끝 패턴 확인
+        has_end = any(re.search(pattern, context, re.IGNORECASE) 
+                     for pattern in self.table_patterns['end'])
+        
+        return has_start or has_end
 
-        if table_start is not None and any(re.search(pattern, text) for pattern in end_patterns):
-            table_end = i
+    def get_context(self, text: str, start: int, end: int, window: int = 300) -> str:
+        """
+        매칭된 텍스트의 전후 컨텍스트를 추출
+        """
+        context_start = max(0, start - window)
+        context_end = min(len(text), end + window)
+        return text[context_start:context_end]
 
-            start_page = text_chunks[table_start]['page']
-            end_page = text_chunks[table_end]['page']
-            pages = list(range(start_page, end_page + 1))
+```python
+class PDFProcessor:
+    def __init__(self, pdf_path: str):
+        """
+        PDF 처리를 위한 클래스 초기화
+        """
+        self.pdf_path = pdf_path
+        self.texts_by_page = {}
+        self.doc = None
+        self.load_pdf()
 
-            context_start = max(0, table_start - 5)
-            context_end = min(len(text_chunks), table_end + 5)
-            context = text_chunks[context_start:context_end]
-
-            tables.append({
-                'start': text_chunks[table_start],
-                'end': text_chunks[table_end],
-                'pages': pages,
-                'context': context
-            })
-            table_start = None
-
-    return tables
-
-def extract_text_above_bbox(page, bbox):
-    x0, y0, x1, y1 = bbox  # bbox: (x0, y0, x1, y1)
-    text_blocks = page.get_text("blocks")
-    # 테이블 bbox의 y0보다 위에 있는 텍스트 블록 중 가장 아래에 있는 것 선택
-    texts_above = []
-    for block in text_blocks:
-        if len(block) >= 5:
-            bx0, by0, bx1, by1, text = block[:5]
-            if by1 <= y0:  # 블록의 아래쪽 y좌표가 테이블의 위쪽 y좌표보다 작거나 같으면
-                texts_above.append((by1, text))
-    if texts_above:
-        # y 좌표가 가장 큰 (테이블 바로 위에 있는) 텍스트 선택
-        texts_above.sort(reverse=True)
-        return texts_above[0][1].strip()
-    else:
-        return "제목 없음"
-
-def extract_tables_with_camelot(pdf_path, tables_info):
-    all_tables = []
-    doc = fitz.open(pdf_path)
-    for table_info in tables_info:
-        pages = table_info['pages']
-        pages_str = ','.join(map(str, pages))
-        print(f"Extracting table from pages {pages_str} using Camelot...")
+    def load_pdf(self):
+        """
+        PDF 파일 로드 및 텍스트 추출
+        """
         try:
-            tables = camelot.read_pdf(pdf_path, pages=pages_str, flavor='lattice')
+            with open(self.pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                self.texts_by_page = {
+                    i+1: page.extract_text() 
+                    for i, page in enumerate(reader.pages)
+                }
+            self.doc = fitz.open(self.pdf_path)
+            logger.info(f"PDF 로드 완료: 총 {len(self.texts_by_page)} 페이지")
         except Exception as e:
-            print(f"Error extracting tables from pages {pages_str}: {e}")
-            continue
+            logger.error(f"PDF 로드 중 오류 발생: {str(e)}")
+            raise
 
-        if not tables:
-            continue
+    def extract_tables(self, page_numbers: List[int]) -> List[Dict[str, Any]]:
+        """
+        지정된 페이지에서 표 추출
+        """
+        tables = []
+        try:
+            for page_num in page_numbers:
+                logger.info(f"페이지 {page_num}에서 표 추출 중...")
+                camelot_tables = camelot.read_pdf(
+                    self.pdf_path,
+                    pages=str(page_num),
+                    flavor='lattice'
+                )
+                
+                for table in camelot_tables:
+                    df = table.df
+                    table_info = {
+                        'dataframe': df,
+                        'page': page_num,
+                        'accuracy': table.parsing_report['accuracy'],
+                        'whitespace': table.parsing_report['whitespace']
+                    }
+                    tables.append(table_info)
+                    
+        except Exception as e:
+            logger.error(f"표 추출 중 오류 발생: {str(e)}")
+        
+        return tables
 
-        for table in tables:
-            df = table.df
+class ExcelExporter:
+    def __init__(self, output_path: str):
+        """
+        엑셀 내보내기를 위한 클래스 초기화
+        """
+        self.output_path = output_path
+        self.wb = Workbook()
+        self.wb.remove(self.wb.active)
 
-            # 표의 바운딩 박스 가져오기
-            bbox = table._bbox  # (x1, y1, x2, y2)
-            # fitz는 (x0, y0, x1, y1)
-            x0, y0, x1, y1 = bbox
+    def create_sheet(self, name: str) -> None:
+        """
+        새로운 시트 생성
+        """
+        if name not in self.wb.sheetnames:
+            self.wb.create_sheet(name)
 
-            # 표 위의 텍스트 추출
-            page_num = table.page - 1  # fitz는 0부터 시작
-            page = doc.load_page(page_num)
-            text_above_table = extract_text_above_bbox(page, bbox)
+    def add_table_to_sheet(self, sheet_name: str, table_info: Dict[str, Any], 
+                          start_row: int = 1) -> int:
+        """
+        시트에 표 추가
+        """
+        ws = self.wb[sheet_name]
+        current_row = start_row
 
-            # 추출한 텍스트를 전처리하여 제목으로 지정
-            title = text_above_table.strip()
+        # 표 제목 및 메타데이터 추가
+        title = f"페이지 {table_info['page']} - "
+        title += f"정확도: {table_info.get('accuracy', 'N/A')}%"
+        
+        ws.cell(row=current_row, column=1, value=title)
+        ws.merge_cells(
+            start_row=current_row, 
+            start_column=1, 
+            end_row=current_row, 
+            end_column=5
+        )
+        ws.cell(row=current_row, column=1).font = Font(bold=True)
+        current_row += 1
 
-            all_tables.append({
-                'dataframe': df,
-                'title': title,
-                'page': table.page
-            })
-    print(f"Found {len(all_tables)} tables in total")
-    return all_tables
-
-def process_tables(all_tables):
-    processed_data = []
-    for i, table_info in enumerate(all_tables):
+        # 데이터프레임 추가
         df = table_info['dataframe']
-        title = table_info['title']
-        page = table_info['page']
-        df['Table_Number'] = i + 1
-        df['Table_Title'] = title  # 여기에서 제목을 지정
-        df['Page'] = page
-        processed_data.append(df)
-    if processed_data:
-        return pd.concat(processed_data, ignore_index=True)
-    else:
-        return pd.DataFrame()
-
-def save_tables_to_excel(tables_dict, output_path, document_title=None):
-    wb = Workbook()
-    # 기본 시트 제거
-    wb.remove(wb.active)
-    
-    for sheet_name, tables in tables_dict.items():
-        ws = wb.create_sheet(title=sheet_name)
-        current_row = 1
-
-        if document_title:
-            ws.cell(row=current_row, column=1, value=document_title)
-            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=5)
-            ws.cell(row=current_row, column=1).font = Font(size=16, bold=True)
-            current_row += 2  # 빈 줄 추가
-
-        for idx, table_info in enumerate(tables):
-            # table_info는 표 정보 dict
-            if 'dataframe' not in table_info:
-                print(f"Skipping table in sheet '{sheet_name}' as 'dataframe' key is missing.")
-                continue  # 'dataframe' 키가 없으면 스킵
-
-            df = table_info['dataframe']
-            title = table_info['title']
-            page = table_info['page']
-
-            # 표 제목 추가
-            ws.cell(row=current_row, column=1, value=f"표 {idx+1}: {title} (페이지 {page})")
-            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=df.shape[1])
-            ws.cell(row=current_row, column=1).font = Font(bold=True)
+        for r in dataframe_to_rows(df, index=False, header=True):
+            for c_idx, value in enumerate(r, start=1):
+                cell = ws.cell(row=current_row, column=c_idx, value=value)
+                cell.alignment = Alignment(wrap_text=True)
             current_row += 1
 
-            # 데이터프레임을 엑셀 시트에 추가
-            for r in dataframe_to_rows(df, index=False, header=True):
-                for c_idx, value in enumerate(r, start=1):
-                    ws.cell(row=current_row, column=c_idx, value=value)
-                    ws.cell(row=current_row, column=c_idx).alignment = Alignment(wrap_text=True)
-                current_row += 1
-            current_row += 1  # 표 사이에 빈 줄 추가
+        return current_row + 1
 
-        # 열 너비 자동 조정
-        for column_cells in ws.columns:
-            length = max(len(str(cell.value)) if cell.value else 0 for cell in column_cells)
-            ws.column_dimensions[get_column_letter(column_cells[0].column)].width = min(length + 2, 50)
-
-    wb.save(output_path)
-    print(f"Tables have been saved to {output_path}")
-
-def find_pages_with_keyword_in_page(texts_by_page, keyword):
-    pages = []
-    preprocessed_keyword = preprocess_text(keyword)
-
-    for page_num, text in texts_by_page.items():
-        preprocessed_text = preprocess_text(text)
-        if preprocessed_keyword in preprocessed_text:
-            pages.append(page_num)
-    return pages
-
-def extract_text_from_page(page):
-    return page.get_text("text")
+    def save(self) -> None:
+        """
+        엑셀 파일 저장
+        """
+        try:
+            self.wb.save(self.output_path)
+            logger.info(f"엑셀 파일 저장 완료: {self.output_path}")
+        except Exception as e:
+            logger.error(f"엑셀 파일 저장 중 오류 발생: {str(e)}")
+            raise
 
 def main():
-    uploads_folder = "uploads"
-    output_folder = "output"
+    try:
+        # 파일 경로 설정
+        uploads_folder = "uploads"
+        output_folder = "output"
+        os.makedirs(output_folder, exist_ok=True)
 
-    os.makedirs(output_folder, exist_ok=True)
+        pdf_files = [f for f in os.listdir(uploads_folder) if f.endswith('.pdf')]
+        if not pdf_files:
+            logger.error("PDF 파일을 찾을 수 없습니다.")
+            return
 
-    pdf_files = [f for f in os.listdir(uploads_folder) if f.endswith('.pdf')]
-    if not pdf_files:
-        print("No PDF files found in the uploads folder.")
-        return
+        pdf_file = pdf_files[0]
+        pdf_path = os.path.join(uploads_folder, pdf_file)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_excel_path = os.path.join(
+            output_folder, 
+            f"{os.path.splitext(pdf_file)[0]}_{timestamp}_analysis.xlsx"
+        )
 
-    pdf_file = pdf_files[0]
-    pdf_path = os.path.join(uploads_folder, pdf_file)
-    output_excel_path = os.path.join(output_folder, f"{os.path.splitext(pdf_file)[0]}_tables.xlsx")
-    search_output_excel_path = os.path.join(output_folder, f"{os.path.splitext(pdf_file)[0]}_search_results.xlsx")
+        # PDF 처리
+        pdf_processor = PDFProcessor(pdf_path)
+        
+        # 표 끝 검출
+        detector = TableEndDetector()
+        results = detector.find_table_ends(pdf_processor.texts_by_page)
 
-    print(f"Processing PDF file: {pdf_file}")
+        # 결과 정리
+        found_pages = {
+            '상해관련': [],
+            '질병관련': []
+        }
 
-    # 전체 텍스트와 페이지 번호 추출
-    with open(pdf_path, 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
-        full_text = ""
-        page_numbers = []
-        texts_by_page = {}
-        for i, page in enumerate(reader.pages):
-            page_text = page.extract_text()
-            if page_text:
-                full_text += page_text + "\n"
-                page_numbers.extend([i+1] * len(page_text.split()))
-                texts_by_page[i+1] = page_text  # 페이지별로 텍스트 저장
+        for category, findings in results.items():
+            if findings:
+                found_pages[category].extend([page for page, _, _ in findings])
+                print(f"\n{category} 특약 표 끝 위치:")
+                for page_num, text, context in findings:
+                    print(f"\n페이지 {page_num}:")
+                    print("발견된 텍스트:", text)
+                    print("\n주변 컨텍스트:")
+                    print(context)
+                    print("-" * 80)
 
-    # 텍스트 청크 생성 및 인덱스 구축 (RAG용)
-    chunks = split_text_into_chunks(full_text)
-    index, model = create_index(chunks)
+        # 표 추출 및 엑셀 저장
+        excel_exporter = ExcelExporter(output_excel_path)
+        
+        for category in ['상해관련', '질병관련']:
+            if found_pages[category]:
+                excel_exporter.create_sheet(category)
+                tables = pdf_processor.extract_tables(found_pages[category])
+                current_row = 1
+                
+                for table_info in tables:
+                    current_row = excel_exporter.add_table_to_sheet(
+                        category, 
+                        table_info, 
+                        current_row
+                    )
 
-    # RAG를 사용하여 선택특약 검색
-    select_query = "선택특약"
-    select_results = search_rag(select_query, index, model, chunks, k=10, threshold=0.5)
-    select_df = pd.DataFrame(select_results)
+        excel_exporter.save()
+        logger.info("처리 완료")
 
-    # 선택특약이 포함된 페이지 찾기
-    select_pages = find_pages_with_keyword_in_page(texts_by_page, "선택특약")
-    print("선택특약이 포함된 페이지:", select_pages)
-
-    if not select_pages:
-        print("선택특약이 포함된 페이지를 찾지 못했습니다.")
-        return
-
-    # 선택특약이 있는 페이지의 텍스트를 txt 파일로 저장
-    doc = fitz.open(pdf_path)
-    for page_num in select_pages:
-        page = doc.load_page(page_num - 1)
-        text = extract_text_from_page(page)
-        txt_output_path = os.path.join(output_folder, f"page_{page_num}_text.txt")
-        with open(txt_output_path, 'w', encoding='utf-8') as f:
-            f.write(text)
-        print(f"Page {page_num}의 텍스트가 {txt_output_path}에 저장되었습니다.")
-
-    # 선택특약 페이지 내에서 1종, 2종, 3종 찾기 및 출력
-    종_sheets = {
-        "1종": [],
-        "2종": [],
-        "3종": []
-    }
-
-    for page_num in select_pages:
-        page_text = texts_by_page.get(page_num, "")
-        종_detected = False
-        if "1종" in page_text:
-            print(f"Page {page_num}: 1종이 검출되었습니다.")
-            종_detected = True
-            종_sheets["1종"].append({
-                'page': page_num,
-                'text': page_text
-            })
-        if "2종" in page_text:
-            print(f"Page {page_num}: 2종이 검출되었습니다.")
-            종_detected = True
-            종_sheets["2종"].append({
-                'page': page_num,
-                'text': page_text
-            })
-        if "3종" in page_text:
-            print(f"Page {page_num}: 3종이 검출되었습니다.")
-            종_detected = True
-            종_sheets["3종"].append({
-                'page': page_num,
-                'text': page_text
-            })
-        if not 종_detected:
-            print(f"Page {page_num}: 종이 검출되지 않았습니다.")
-
-    # RAG를 사용하여 상해관련특약 검색
-    injury_query = "상해관련특약"
-    injury_results = search_rag(injury_query, index, model, chunks, k=10, threshold=0.5)
-    injury_df = pd.DataFrame(injury_results)
-
-    # RAG를 사용하여 질병관련특약 검색
-    disease_query = "질병관련특약"
-    disease_results = search_rag(disease_query, index, model, chunks, k=10, threshold=0.5)
-    disease_df = pd.DataFrame(disease_results)
-
-    # 결과 합치기
-    final_search_df = pd.concat([select_df, injury_df, disease_df], ignore_index=True)
-
-    # 엑셀 파일로 저장 (검색 결과)
-    final_search_df.to_excel(search_output_excel_path, index=False, engine='openpyxl')
-    print(f"검색 결과가 {search_output_excel_path}에 저장되었습니다.")
-
-    # '질병관련 특별약관'이 나오면 표 추출 종료
-    stop_keyword = "질병관련 특별약관"
-    stop_pages = find_pages_with_keyword_in_page(texts_by_page, stop_keyword)
-    if stop_pages:
-        print(f"'질병관련 특별약관'이 포함된 페이지 {stop_pages}에서 표 추출을 종료합니다.")
-        # 표 추출 시 질병관련 특별약관이 있는 페이지 이전까지의 표만 포함
-        min_stop_page = min(stop_pages)
-        tables_info = detect_table_boundaries(extract_text_with_positions(pdf_path))
-        # 추가 요구사항: 질병관련 특약의 표는 여러 페이지에 걸쳐져 있으므로, min_stop_page 이전의 표만 포함
-        filtered_tables_info = [table for table in tables_info if max(table['pages']) < min_stop_page]
-    else:
-        tables_info = detect_table_boundaries(extract_text_with_positions(pdf_path))
-        filtered_tables_info = tables_info
-
-    # Camelot과 PyMuPDF를 함께 사용하여 표와 제목 추출
-    tables = extract_tables_with_camelot(pdf_path, filtered_tables_info)
-
-    # 1종, 2종, 3종에 따라 시트 분류 (표만 분류)
-    # 각 시트에는 상해관련 특약과 질병관련 특약의 두 표가 있어야 함
-    tables_sheets = {
-        "1종": {"상해관련 특약": [], "질병관련 특약": []},
-        "2종": {"상해관련 특약": [], "질병관련 특약": []},
-        "3종": {"상해관련 특약": [], "질병관련 특약": []}
-    }
-
-    # 질병관련 특약 표를 병합하기 위한 임시 저장
-    disease_tables_temp = {
-        "1종": [],
-        "2종": [],
-        "3종": []
-    }
-
-    for table in tables:
-        title = table['title']
-        page = table['page']
-        # 각 종별로 분류
-        if "1종" in title:
-            if "상해관련 특약" in title:
-                tables_sheets["1종"]["상해관련 특약"].append(table)
-            elif "질병관련 특약" in title:
-                disease_tables_temp["1종"].append(table)
-        elif "2종" in title:
-            if "상해관련 특약" in title:
-                tables_sheets["2종"]["상해관련 특약"].append(table)
-            elif "질병관련 특약" in title:
-                disease_tables_temp["2종"].append(table)
-        elif "3종" in title:
-            if "상해관련 특약" in title:
-                tables_sheets["3종"]["상해관련 특약"].append(table)
-            elif "질병관련 특약" in title:
-                disease_tables_temp["3종"].append(table)
-
-    # 질병관련 특약 표 병합
-    for 종, tables_list in disease_tables_temp.items():
-        if tables_list:
-            # 여러 페이지에 걸친 질병관련 특약 표를 하나로 병합
-            merged_df = pd.DataFrame()
-            for table in tables_list:
-                merged_df = pd.concat([merged_df, table['dataframe']], ignore_index=True)
-            # 제목을 첫 표의 제목으로 지정
-            merged_title = tables_list[0]['title']
-            # 페이지는 첫 표의 페이지로 지정
-            merged_page = tables_list[0]['page']
-            # 병합된 표 정보 생성
-            merged_table = {
-                'dataframe': merged_df,
-                'title': merged_title,
-                'page': merged_page
-            }
-            tables_sheets[종]["질병관련 특약"].append(merged_table)
-
-    # 엑셀로 저장
-    # 각 시트에 상해관련 특약과 질병관련 특약 두 개의 표가 있어야 함
-    save_tables_to_excel(tables_sheets, output_excel_path, document_title=None)
-
-    print(f"All processed tables have been saved to {output_excel_path}")
+    except Exception as e:
+        logger.error(f"처리 중 오류 발생: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()
