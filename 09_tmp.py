@@ -25,6 +25,12 @@ class TableExtractor:
         """
         try:
             logger.info(f"Extracting tables from pages {start_page} to {end_page}")
+            
+            # 페이지 범위 유효성 검사
+            if start_page > end_page or start_page < 1:
+                logger.error("Invalid page range specified.")
+                return pd.DataFrame()
+
             # camelot으로 표 추출
             tables = camelot.read_pdf(
                 pdf_path,
@@ -32,7 +38,7 @@ class TableExtractor:
                 flavor='lattice'
             )
             
-            if not tables:
+            if len(tables) == 0:
                 logger.warning(f"No tables found in pages {start_page}-{end_page}")
                 return pd.DataFrame()
 
