@@ -134,7 +134,6 @@ class TableEndDetector:
         context_end = min(len(text), end + window)
         return text[context_start:context_end]
 
-```python
 class PDFProcessor:
     def __init__(self, pdf_path: str):
         """
