@@ -63,9 +63,11 @@ class TableExtractor:
             for idx, table in enumerate(tables):
                 df = table.df
                 print(f"Table {idx} extracted with shape: {df.shape}")
-                # 빈 행이나 불필요한 데이터 제거
+                # 빈 행이나 불필요한 데이터 제거 (괄호 처리)
+                print(f"Cleaning table {idx}...")
                 df = df.dropna(how='all')
-                df = df[~df.iloc[:,0].str.contains("※|주)", na=False)]
+                # 정규 표현식이 아닌 단순 문자열로 검색하도록 수정 (괄호 문제 해결)
+                df = df[~df.iloc[:, 0].str.contains("※|주)", regex=False, na=False)]
                 print(f"Table {idx} after cleaning has shape: {df.shape}")
                 dfs.append(df)
 
@@ -226,11 +228,4 @@ def main():
             return
         
         # PDF 처리 및 표 저장
-        process_pdf_and_save_tables(pdf_path, output_path)
-            
-    except Exception as e:
-        logger.error(f"처리 중 오류 발생: {str(e)}")
-        print(f"처리 중 오류 발생: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+        process_pdf_and_save_tables(pdf_path, output_path
