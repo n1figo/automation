@@ -228,4 +228,11 @@ def main():
             return
         
         # PDF 처리 및 표 저장
-        process_pdf_and_save_tables(pdf_path, output_path
+        process_pdf_and_save_tables(pdf_path, output_path)
+            
+    except Exception as e:
+        logger.error(f"처리 중 오류 발생: {str(e)}")
+        print(f"처리 중 오류 발생: {str(e)}")
+
+if __name__ == "__main__":
+    main()
