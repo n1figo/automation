@@ -31,10 +31,16 @@ class TableExtractor:
                 logger.error("Invalid page range specified.")
                 return pd.DataFrame()
 
+            # 페이지 범위가 정확한지 확인
+            pages = f"{start_page}-{end_page}"
+            if not re.match(r'^\d+-\d+$', pages):
+                logger.error(f"Invalid pages format: {pages}")
+                return pd.DataFrame()
+
             # camelot으로 표 추출
             tables = camelot.read_pdf(
                 pdf_path,
-                pages=f"{start_page}-{end_page}",
+                pages=pages,
                 flavor='lattice'
             )
             
@@ -42,7 +48,6 @@ class TableExtractor:
                 logger.warning(f"No tables found in pages {start_page}-{end_page}")
                 return pd.DataFrame()
 
-            # 모든 표 병합
             dfs = []
             for table in tables:
                 df = table.df
@@ -51,7 +56,6 @@ class TableExtractor:
                 df = df[~df.iloc[:,0].str.contains("※|주)", na=False)]
                 dfs.append(df)
 
-            # 모든 DataFrame 병합
             merged_df = pd.concat(dfs, ignore_index=True)
             return merged_df
 
@@ -123,6 +127,9 @@ def process_pdf_and_save_tables(pdf_path: str, output_path: str):
         # 표 추출
         table_extractor = TableExtractor()
         
+        injury_df = pd.DataFrame()
+        disease_df = pd.DataFrame()
+        
         # 상해관련 특약 표 추출
         injury_range = section_ranges.get('상해관련')
         if injury_range:
@@ -132,8 +139,6 @@ def process_pdf_and_save_tables(pdf_path: str, output_path: str):
                 injury_range[0], 
                 injury_range[1]
             )
-        else:
-            injury_df = pd.DataFrame()
             
         # 질병관련 특약 표 추출
         disease_range = section_ranges.get('질병관련')
@@ -144,12 +149,9 @@ def process_pdf_and_save_tables(pdf_path: str, output_path: str):
                 disease_range[0], 
                 disease_range[1]
             )
-        else:
-            disease_df = pd.DataFrame()
-            
+        
         # Excel 파일로 저장
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # 상해관련 특약 표 저장
             if not injury_df.empty:
                 injury_df.to_excel(
                     writer, 
@@ -160,42 +162,23 @@ def process_pdf_and_save_tables(pdf_path: str, output_path: str):
                 )
                 logger.info("Saved injury section tables")
                 
-                # 질병관련 특약 표 저장 (상해관련 특약 표 아래에)
-                if not disease_df.empty:
-                    # 빈 줄 추가를 위한 시작 행 계산
-                    start_row = len(injury_df) + 3
-                    disease_df.to_excel(
-                        writer, 
-                        sheet_name='특약표',
-                        index=False,
-                        startrow=start_row,
-                        startcol=0
-                    )
-                    logger.info("Saved disease section tables")
+            if not disease_df.empty:
+                # 빈 줄 추가를 위한 시작 행 계산
+                start_row = len(injury_df) + 3 if not injury_df.empty else 0
+                disease_df.to_excel(
+                    writer, 
+                    sheet_name='특약표',
+                    index=False,
+                    startrow=start_row,
+                    startcol=0
+                )
+                logger.info("Saved disease section tables")
             
-            # 워크시트 가져오기
-            worksheet = writer.sheets['특약표']
-            
-            # 구분선 추가 (상해관련과 질병관련 사이)
-            if not injury_df.empty and not disease_df.empty:
-                separator_row = len(injury_df) + 2
-                for col in range(1, max(len(injury_df.columns), len(disease_df.columns)) + 1):
-                    cell = worksheet.cell(row=separator_row, column=col)
-                    cell.value = "=" * 50  # 구분선으로 사용할 문자
-            
-            # 열 너비 자동 조정
-            for column in worksheet.columns:
-                max_length = 0
-                column = [cell for cell in column]
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(cell.value)
-                    except:
-                        pass
-                adjusted_width = (max_length + 2)
-                worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
-        
+            # 엑셀 파일 저장 시 워크시트가 비어 있지 않은지 확인
+            if injury_df.empty and disease_df.empty:
+                logger.error("Both DataFrames are empty, no data to save.")
+                return
+
         logger.info(f"Successfully saved tables to {output_path}")
         
     except Exception as e:
