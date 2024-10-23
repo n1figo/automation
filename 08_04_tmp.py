@@ -8,197 +8,144 @@ import os
 import pandas as pd
 import camelot
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.styles import PatternFill, Alignment, Font
 from sentence_transformers import SentenceTransformer
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class PageRangeDetector:
+class InsuranceDocumentAnalyzer:
     def __init__(self):
         self.section_patterns = {
-            "상해관련": r'상해관련\s*특약',
-            "질병관련": r'질병관련\s*특약'
+            "종류": r'\[(\d)종\]',
+            "특약유형": r'(상해관련|질병관련)\s*특약'
         }
+        self.section_pages = {"[1종]": None, "[2종]": None, "[3종]": None}
+        self.section_ranges = {}
 
-    def find_section_pages(self, pdf_path: str) -> Dict[str, Tuple[int, int]]:
-        """상해관련 특약과 질병관련 특약의 페이지 범위 찾기"""
+    def find_section_pages(self, pdf_path: str) -> Dict[str, int]:
+        """PDF에서 1종, 2종, 3종의 시작 페이지 찾기"""
         try:
             doc = fitz.open(pdf_path)
-            section_starts = {"상해관련": None, "질병관련": None}
-            section_ends = {"상해관련": None, "질병관련": None}
-            
             for page_num in range(len(doc)):
                 text = doc[page_num].get_text()
                 
-                # 섹션 시작 페이지 찾기
-                for section, pattern in self.section_patterns.items():
-                    if section_starts[section] is None and re.search(pattern, text):
-                        section_starts[section] = page_num
-                        logger.info(f"{section} 특약 시작 페이지: {page_num + 1}")
-                
-                # 섹션 끝 페이지 찾기 (다음 섹션 시작 전 또는 특정 키워드)
-                for section in section_starts.keys():
-                    if (section_starts[section] is not None and 
-                        section_ends[section] is None):
-                        next_section_found = any(
-                            re.search(pattern, text) 
-                            for s, pattern in self.section_patterns.items() 
-                            if s != section
-                        )
-                        if next_section_found or "※" in text:
-                            section_ends[section] = page_num - 1
-                            logger.info(f"{section} 특약 끝 페이지: {page_num}")
+                # 종 패턴 찾기
+                matches = re.finditer(self.section_patterns["종류"], text)
+                for match in matches:
+                    종_type = f"[{match.group(1)}종]"
+                    if self.section_pages[종_type] is None:
+                        self.section_pages[종_type] = page_num
+                        logger.info(f"{종_type} 시작 페이지: {page_num + 1}")
 
-            # 마지막 섹션의 끝 페이지 설정
-            for section in section_ends.keys():
-                if section_ends[section] is None and section_starts[section] is not None:
-                    section_ends[section] = len(doc) - 1
-
-            doc.close()
+            # 섹션 범위 설정
+            sorted_pages = sorted([(k, v) for k, v in self.section_pages.items() if v is not None], 
+                                key=lambda x: x[1])
             
-            # 페이지 범위 반환
-            return {
-                section: (start, section_ends[section])
-                for section, start in section_starts.items()
-                if start is not None and section_ends[section] is not None
-            }
+            for i, (종_type, start_page) in enumerate(sorted_pages):
+                if i + 1 < len(sorted_pages):
+                    end_page = sorted_pages[i + 1][1]
+                else:
+                    end_page = len(doc)
+                self.section_ranges[종_type] = (start_page, end_page)
+                
+            doc.close()
+            return self.section_pages
             
         except Exception as e:
             logger.error(f"Error finding section pages: {e}")
             return {}
 
-class TitleExtractor:
+
+class TableExtractor:
     def __init__(self):
+        self.font_size_threshold = 10
+        self.title_max_length = 50
+        # SentenceTransformer 모델 초기화
         self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
 
-    def validate_title_by_rules(self, title_text: str) -> bool:
-        """제목 텍스트 규칙 검증"""
-        rules = {
-            'length': lambda x: 5 < len(x) < 100,
-            'forbidden_chars': lambda x: not any(char in x for char in ['※', '►', '▶', '=']),
-            'keyword': lambda x: any(keyword in x for keyword in [
-                '보장', '특약', '진단', '수술', '입원', '치료'
-            ]),
-            'number_ratio': lambda x: sum(c.isdigit() for c in x) / len(x) < 0.3
-        }
-        
-        score = sum(rule(title_text) for rule in rules.values())
-        return score >= 3
-
-    def validate_position(self, title_block: Dict, table_block: Dict) -> bool:
-        """제목 위치 규칙 검증"""
-        try:
-            title_bottom = title_block['bbox'][3]
-            table_top = table_block['bbox'][1]
-            distance = table_top - title_bottom
-            
-            return 0 < distance < 50  # 50포인트 이내의 거리
-        except Exception:
-            return False
-
-    def extract_title(self, page, table_position) -> str:
-        """RAG와 규칙 기반으로 제목 추출"""
+    def extract_table_title(self, page) -> str:
+        """RAG를 활용한 표 위의 제목 추출"""
         try:
             blocks = page.get_text("dict")["blocks"]
-            candidates = []
+            table_block = None
+            title_candidates = []
             
+            # 표 블록 찾기
             for block in blocks:
                 if "lines" in block:
                     text = " ".join(span["text"] for line in block["lines"] 
                                   for span in line["spans"])
-                    
-                    if block["bbox"][3] < table_position:  # 표보다 위에 있는 텍스트
-                        if self.validate_title_by_rules(text):
-                            # 임베딩 생성 및 유사도 계산
-                            text_embedding = self.model.encode([text])[0]
-                            reference_embedding = self.model.encode(["특약 보장 내용의 제목"])[0]
-                            similarity = np.dot(text_embedding, reference_embedding)
-                            
-                            candidates.append({
-                                'text': text,
-                                'block': block,
-                                'similarity': similarity,
-                                'distance': table_position - block["bbox"][3]
-                            })
+                    if "특약" in text and len(block["lines"]) > 1:
+                        table_block = block
+                        break
             
-            if candidates:
-                # 유사도와 거리를 결합하여 최적의 제목 선택
-                best_candidate = max(
-                    candidates,
-                    key=lambda x: x['similarity'] * 0.7 + (1 / (1 + x['distance'])) * 0.3
-                )
-                return best_candidate['text']
+            if table_block:
+                table_top = table_block["bbox"][1]
                 
-            return "Untitled Table"
-            
-        except Exception as e:
-            logger.error(f"Error extracting title: {e}")
-            return "Untitled Table"
-
-class TableExtractor:
-    def __init__(self):
-        self.title_extractor = TitleExtractor()
-
-    def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
-        """섹션 범위 내의 표 추출"""
-        try:
-            results = []
-            doc = fitz.open(pdf_path)
-            
-            for page_num in range(start_page, end_page + 1):
-                page = doc[page_num]
-                
-                # 표 추출
-                tables = self.extract_with_camelot(pdf_path, page_num + 1)
-                
-                for table in tables:
-                    df = self.clean_table(table.df)
-                    if not df.empty:
-                        # 표의 위치 정보 얻기
-                        table_bbox = table.cells[0][0].bbox  # 첫 번째 셀의 bbox
-                        table_top = table_bbox[1]
+                # 표 위의 텍스트 블록들 수집
+                for block in blocks:
+                    if "lines" in block and block["bbox"][3] < table_top:
+                        text = " ".join(span["text"] for line in block["lines"] 
+                                      for span in line["spans"])
                         
-                        # 제목 추출
-                        title = self.title_extractor.extract_title(page, table_top)
-                        results.append((title, df, page_num + 1))
-
-            doc.close()
-            return results
+                        # 텍스트 길이 및 기본 필터링
+                        if 5 < len(text) < self.title_max_length and not any(c in text for c in ['※', '►', '▶']):
+                            title_candidates.append({
+                                'text': text,
+                                'distance': table_top - block["bbox"][3],
+                                'bbox': block["bbox"]
+                            })
+                
+                if title_candidates:
+                    # RAG 검색을 위한 쿼리와 참조 텍스트 준비
+                    queries = [
+                        "보험금을 지급하는 사유",
+                        "보장하는 내용",
+                        "특약 보장 내용",
+                        "보험금 지급사유"
+                    ]
+                    
+                    # 후보 텍스트들의 임베딩 생성
+                    candidate_embeddings = self.model.encode([c['text'] for c in title_candidates])
+                    query_embeddings = self.model.encode(queries)
+                    
+                    # 각 후보에 대한 점수 계산
+                    scores = []
+                    for idx, candidate in enumerate(title_candidates):
+                        # 의미적 유사도 점수
+                        semantic_score = np.max([
+                            np.dot(candidate_embeddings[idx], query_emb)
+                            for query_emb in query_embeddings
+                        ])
+                        
+                        # 거리 기반 점수 (가까울수록 높은 점수)
+                        distance_score = 1 / (1 + candidate['distance'] / 100)
+                        
+                        # 텍스트 특성 점수
+                        characteristic_score = 0
+                        if any(keyword in candidate['text'] for keyword in ['보장', '특약', '진단', '수술', '입원']):
+                            characteristic_score += 0.3
+                        
+                        # 최종 점수 계산
+                        final_score = (
+                            semantic_score * 0.5 +  # 의미적 유사도
+                            distance_score * 0.3 +  # 물리적 거리
+                            characteristic_score    # 텍스트 특성
+                        )
+                        
+                        scores.append(final_score)
+                    
+                    # 가장 높은 점수를 받은 제목 선택
+                    best_idx = np.argmax(scores)
+                    return title_candidates[best_idx]['text']
+            
+            return "Untitled Table"
             
         except Exception as e:
-            logger.error(f"Error extracting tables from section: {e}")
-            return []
-
-    def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
-        """Camelot을 사용한 표 추출"""
-        try:
-            tables = camelot.read_pdf(
-                pdf_path,
-                pages=str(page_num),
-                flavor='lattice'
-            )
-            if not tables:
-                tables = camelot.read_pdf(
-                    pdf_path,
-                    pages=str(page_num),
-                    flavor='stream'
-                )
-            return tables
-        except Exception as e:
-            logger.error(f"Camelot extraction failed: {str(e)}")
-            return []
-
-    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
-        """표 데이터 정제"""
-        try:
-            df = df.dropna(how='all')
-            df = df[~df.iloc[:, 0].str.contains("※|주)", regex=False, na=False)]
-            return df
-        except Exception as e:
-            logger.error(f"Error cleaning table: {e}")
-            return pd.DataFrame()
+            logger.error(f"Error extracting table title with RAG: {e}")
+            return "Untitled Table"
 
 class ExcelWriter:
     @staticmethod
@@ -210,19 +157,8 @@ class ExcelWriter:
                     if not tables:
                         continue
                         
+                    sheet_name = section.replace("[", "").replace("]", "")
                     current_row = 0
-                    sheet_name = "특약표"
-                    
-                    # 섹션 제목 쓰기
-                    section_df = pd.DataFrame([[section]], columns=[''])
-                    section_df.to_excel(
-                        writer,
-                        sheet_name=sheet_name,
-                        startrow=current_row,
-                        index=False,
-                        header=False
-                    )
-                    current_row += 2
                     
                     for title, df, page_num in tables:
                         # 제목 쓰기
@@ -249,11 +185,9 @@ class ExcelWriter:
                         # 제목 스타일링
                         title_cell = worksheet.cell(row=current_row + 1, column=1)
                         title_cell.font = Font(bold=True, size=12)
-                        title_cell.fill = PatternFill(
-                            start_color='E6E6E6',
-                            end_color='E6E6E6',
-                            fill_type='solid'
-                        )
+                        title_cell.fill = PatternFill(start_color='E6E6E6',
+                                                    end_color='E6E6E6',
+                                                    fill_type='solid')
                         
                         current_row += len(df) + 5
 
@@ -272,30 +206,26 @@ def main():
             logger.error("PDF file not found")
             return
 
-        # 페이지 범위 감지
-        page_detector = PageRangeDetector()
-        section_ranges = page_detector.find_section_pages(pdf_path)
+        # 문서 분석기 초기화
+        document_analyzer = InsuranceDocumentAnalyzer()
+        section_pages = document_analyzer.find_section_pages(pdf_path)
         
-        if not section_ranges:
+        if not section_pages:
             logger.error("No sections found in the document")
             return
 
-        # 표 추출
+        # 표 추출기 초기화
         table_extractor = TableExtractor()
         sections_data = {}
         
         # 각 섹션별 표 추출
-        for section, (start_page, end_page) in section_ranges.items():
-            logger.info(f"Processing {section} (pages {start_page + 1} to {end_page + 1})")
-            tables = table_extractor.extract_tables_from_section(
-                pdf_path, start_page, end_page
-            )
-            if tables:
-                sections_data[section] = tables
-                logger.info(f"Found {len(tables)} tables in {section}")
+        for section, (start_page, end_page) in document_analyzer.section_ranges.items():
+            logger.info(f"Processing {section} (pages {start_page + 1} to {end_page})")
+            tables = table_extractor.extract_tables_from_section(pdf_path, start_page, end_page)
+            sections_data[section] = tables
 
         # 결과 저장
-        if sections_data:
+        if any(sections_data.values()):
             ExcelWriter.save_to_excel(sections_data, output_path)
             logger.info("Processing completed successfully")
         else:
