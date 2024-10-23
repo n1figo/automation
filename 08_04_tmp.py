@@ -65,6 +65,45 @@ class TableExtractor:
         # SentenceTransformer 모델 초기화
         self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
 
+    def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
+        """섹션 범위 내의 표 추출"""
+        try:
+            results = []
+            doc = fitz.open(pdf_path)
+            
+            for page_num in range(start_page, end_page):
+                logger.info(f"Processing page {page_num + 1}")
+                page = doc[page_num]
+                text = page.get_text()
+                
+                # 상해관련 또는 질병관련 특약 확인
+                if re.search(r'(상해관련|질병관련)\s*특약', text):
+                    logger.info(f"Found 특약 section on page {page_num + 1}")
+                    
+                    # 표 추출
+                    tables = self.extract_with_camelot(pdf_path, page_num + 1)
+                    
+                    for table in tables:
+                        df = self.clean_table(table.df)
+                        if not df.empty:
+                            # 표의 위치 정보 얻기
+                            table_bbox = table.cells[0][0].bbox  # 첫 번째 셀의 bbox
+                            page_height = table.parsing_report['page_bbox'][3]
+                            # PDF 좌표계를 Fitz 좌표계로 변환
+                            table_top = page_height - table_bbox[3]
+                            
+                            # 제목 추출
+                            title = self.extract_table_title(page)
+                            logger.info(f"Extracted title: {title}")
+                            results.append((title, df, page_num + 1))
+
+            doc.close()
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error extracting tables from section: {e}")
+            raise  # 에러를 상위로 전파하여 디버깅 용이하게 함
+
     def extract_table_title(self, page) -> str:
         """RAG를 활용한 표 위의 제목 추출"""
         try:
