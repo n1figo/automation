@@ -10,6 +10,7 @@ import camelot
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font
 from sentence_transformers import SentenceTransformer
+import traceback
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -57,12 +58,45 @@ class InsuranceDocumentAnalyzer:
             logger.error(f"Error finding section pages: {e}")
             return {}
 
-
 class TableExtractor:
     def __init__(self):
         self.font_size_threshold = 10
         self.title_max_length = 50
         self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
+
+    def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
+        """섹션 범위 내의 표 추출"""
+        try:
+            results = []
+            doc = fitz.open(pdf_path)
+            
+            for page_num in range(start_page, end_page):
+                logger.info(f"Processing page {page_num + 1}")
+                page = doc[page_num]
+                text = page.get_text()
+                
+                # 상해관련 또는 질병관련 특약 확인
+                if re.search(r'(상해관련|질병관련)\s*특약', text):
+                    logger.info(f"Found 특약 section on page {page_num + 1}")
+                    
+                    # 표 추출
+                    tables = self.extract_with_camelot(pdf_path, page_num + 1)
+                    
+                    for idx, table in enumerate(tables):
+                        df = self.clean_table(table.df)
+                        if not df.empty:
+                            # 표의 제목 추출 (페이지 전체 텍스트에서)
+                            title = self.extract_table_title(page)
+                            logger.info(f"Extracted title for table {idx + 1}: {title}")
+                            results.append((title, df, page_num + 1))
+
+            doc.close()
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error extracting tables from section: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
 
     def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
         """Camelot을 사용한 표 추출"""
@@ -73,7 +107,8 @@ class TableExtractor:
                 pages=str(page_num),
                 flavor='lattice',
                 line_scale=40,
-                copy_text=['v']
+                process_background=True,
+                strip_text='\n'
             )
             
             # lattice 모드가 실패하면 stream 모드로 시도
@@ -83,7 +118,8 @@ class TableExtractor:
                     pages=str(page_num),
                     flavor='stream',
                     edge_tol=500,
-                    row_tol=10
+                    row_tol=10,
+                    strip_text='\n'
                 )
                 
             if tables:
@@ -121,46 +157,6 @@ class TableExtractor:
         except Exception as e:
             logger.error(f"Error cleaning table: {e}")
             return pd.DataFrame()
-
-    def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
-        """섹션 범위 내의 표 추출"""
-        try:
-            results = []
-            doc = fitz.open(pdf_path)
-            
-            for page_num in range(start_page, end_page):
-                logger.info(f"Processing page {page_num + 1}")
-                page = doc[page_num]
-                text = page.get_text()
-                
-                # 상해관련 또는 질병관련 특약 확인
-                if re.search(r'(상해관련|질병관련)\s*특약', text):
-                    logger.info(f"Found 특약 section on page {page_num + 1}")
-                    
-                    # 표 추출
-                    tables = self.extract_with_camelot(pdf_path, page_num + 1)
-                    
-                    for idx, table in enumerate(tables):
-                        df = self.clean_table(table.df)
-                        if not df.empty:
-                            # 표의 위치 정보 얻기
-                            table_bbox = table.cells[0][0].bbox  # 첫 번째 셀의 bbox
-                            page_height = table.parsing_report['page_bbox'][3]
-                            # PDF 좌표계를 Fitz 좌표계로 변환
-                            table_top = page_height - table_bbox[3]
-                            
-                            # 제목 추출
-                            title = self.extract_table_title(page)
-                            logger.info(f"Extracted title for table {idx + 1}: {title}")
-                            results.append((title, df, page_num + 1))
-
-            doc.close()
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error extracting tables from section: {e}")
-            traceback.print_exc()  # 상세한 에러 정보 출력
-            return []
 
     def extract_table_title(self, page) -> str:
         """RAG를 활용한 표 위의 제목 추출"""
