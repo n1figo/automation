@@ -62,8 +62,65 @@ class TableExtractor:
     def __init__(self):
         self.font_size_threshold = 10
         self.title_max_length = 50
-        # SentenceTransformer 모델 초기화
         self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
+
+    def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
+        """Camelot을 사용한 표 추출"""
+        try:
+            # 먼저 lattice 모드로 시도
+            tables = camelot.read_pdf(
+                pdf_path,
+                pages=str(page_num),
+                flavor='lattice',
+                line_scale=40,
+                copy_text=['v']
+            )
+            
+            # lattice 모드가 실패하면 stream 모드로 시도
+            if not tables:
+                tables = camelot.read_pdf(
+                    pdf_path,
+                    pages=str(page_num),
+                    flavor='stream',
+                    edge_tol=500,
+                    row_tol=10
+                )
+                
+            if tables:
+                logger.info(f"Successfully extracted {len(tables)} tables from page {page_num}")
+                # 테이블 품질 검사
+                for i, table in enumerate(tables):
+                    accuracy = table.parsing_report.get('accuracy', 0)
+                    whitespace = table.parsing_report.get('whitespace', 100)
+                    logger.info(f"Table {i+1} - Accuracy: {accuracy}%, Whitespace: {whitespace}%")
+            
+            return tables
+            
+        except Exception as e:
+            logger.error(f"Camelot extraction failed on page {page_num}: {str(e)}")
+            return []
+
+    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """표 데이터 정제"""
+        try:
+            # 빈 행/열 제거
+            df = df.dropna(how='all')
+            df = df.dropna(axis=1, how='all')
+            
+            # 특수문자로 시작하는 행 제거
+            df = df[~df.iloc[:, 0].str.contains("※|주)", regex=False, na=False)]
+            
+            # 빈 문자열 처리
+            df = df.replace(r'^\s*$', np.nan, regex=True)
+            
+            # 불필요한 공백 제거
+            df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error cleaning table: {e}")
+            return pd.DataFrame()
 
     def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
         """섹션 범위 내의 표 추출"""
@@ -83,7 +140,7 @@ class TableExtractor:
                     # 표 추출
                     tables = self.extract_with_camelot(pdf_path, page_num + 1)
                     
-                    for table in tables:
+                    for idx, table in enumerate(tables):
                         df = self.clean_table(table.df)
                         if not df.empty:
                             # 표의 위치 정보 얻기
@@ -94,7 +151,7 @@ class TableExtractor:
                             
                             # 제목 추출
                             title = self.extract_table_title(page)
-                            logger.info(f"Extracted title: {title}")
+                            logger.info(f"Extracted title for table {idx + 1}: {title}")
                             results.append((title, df, page_num + 1))
 
             doc.close()
@@ -102,7 +159,8 @@ class TableExtractor:
             
         except Exception as e:
             logger.error(f"Error extracting tables from section: {e}")
-            raise  # 에러를 상위로 전파하여 디버깅 용이하게 함
+            traceback.print_exc()  # 상세한 에러 정보 출력
+            return []
 
     def extract_table_title(self, page) -> str:
         """RAG를 활용한 표 위의 제목 추출"""
