@@ -82,7 +82,7 @@ def save_to_excel(results, output_path):
 
 def main():
     # 설정
-    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"  # 실제 PDF 경로로 변경
+    pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"  # 실제 PDF 경로로 변경
     output_path = "test_page59_tables.xlsx"
     test_page = 59
 
