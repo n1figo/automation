@@ -1,8 +1,12 @@
+'use client'
+
+import { PDFProcessor } from '@/components/PDFProcessor'
 
 export default function Home() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <h1 className="text-4xl font-bold">PDF Processor</h1>
+      <PDFProcessor />
     </main>
   )
 }
+
