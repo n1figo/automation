@@ -21,6 +21,20 @@ class TitleMatcher:
         emb2 = self.get_embedding(text2)
         return 1 - cosine(emb1, emb2)  # 코사인 유사도
 
+def get_table_positions(table, page_height):
+    """Camelot 표의 위치를 PyMuPDF 좌표계로 변환"""
+    x0, y0, x1, y1 = table._bbox
+    
+    # Camelot은 페이지 하단이 0이고 PyMuPDF는 상단이 0이므로 y좌표 변환 필요
+    converted_y0 = page_height - y1  # 상단
+    converted_y1 = page_height - y0  # 하단
+    
+    return {
+        "y_top": converted_y0,
+        "y_bottom": converted_y1,
+        "bbox": (x0, converted_y0, x1, converted_y1)
+    }
+
 def get_titles_with_positions(pdf_path, page_num):
     """제목과 위치 정보 추출"""
     doc = fitz.open(pdf_path)
@@ -62,24 +76,33 @@ def get_titles_with_positions(pdf_path, page_num):
 
 def get_surrounding_text(page, y_top, y_bottom, margin):
     """주변 텍스트 추출"""
-    surrounding = page.get_text("text", clip=(0, y_top - margin, page.rect.width, y_bottom + margin))
-    return surrounding
+    try:
+        surrounding = page.get_text("text", clip=(0, max(0, y_top - margin), 
+                                                page.rect.width, min(page.rect.height, y_bottom + margin)))
+        return surrounding.strip()
+    except Exception as e:
+        print(f"주변 텍스트 추출 중 오류: {str(e)}")
+        return ""
 
 def get_table_context(pdf_path, page_num, table_bbox):
     """표 주변의 문맥 추출"""
-    doc = fitz.open(pdf_path)
-    page = doc[page_num - 1]
-    
-    # 표 위쪽 영역의 텍스트
-    above_text = page.get_text("text", clip=(0, max(0, table_bbox[1] - 50), 
-                                           page.rect.width, table_bbox[1]))
-    
-    # 표 첫 행의 텍스트 (제목행일 가능성이 높음)
-    first_row = page.get_text("text", clip=(table_bbox[0], table_bbox[1],
-                                          table_bbox[2], table_bbox[1] + 20))
-    
-    doc.close()
-    return f"{above_text} {first_row}"
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc[page_num - 1]
+        
+        # 표 위쪽 영역의 텍스트
+        above_text = page.get_text("text", clip=(0, max(0, table_bbox[1] - 50), 
+                                               page.rect.width, table_bbox[1]))
+        
+        # 표 첫 행의 텍스트 (제목행일 가능성이 높음)
+        first_row = page.get_text("text", clip=(table_bbox[0], table_bbox[1],
+                                              table_bbox[2], table_bbox[1] + 20))
+        
+        doc.close()
+        return f"{above_text} {first_row}".strip()
+    except Exception as e:
+        print(f"표 문맥 추출 중 오류: {str(e)}")
+        return ""
 
 def match_titles_to_tables(titles, tables, pdf_path, page_num, matcher, max_distance=50, 
                          position_weight=0.7, similarity_weight=0.3):
@@ -105,10 +128,14 @@ def match_titles_to_tables(titles, tables, pdf_path, page_num, matcher, max_dist
             distance_score = 1 - (distance / max_distance)
             
             # 의미적 유사도 계산
-            similarity = matcher.calculate_similarity(
-                title["text"] + " " + title["context"],
-                table_context
-            )
+            try:
+                similarity = matcher.calculate_similarity(
+                    title["text"] + " " + title["context"],
+                    table_context
+                )
+            except Exception as e:
+                print(f"유사도 계산 중 오류: {str(e)}")
+                similarity = 0
             
             # 최종 점수 계산 (가중 평균)
             final_score = (position_weight * distance_score + 
