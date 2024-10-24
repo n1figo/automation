@@ -18,7 +18,7 @@ def extract_titles_and_tables(pdf_path, page_num):
     lines = page_content.split('\n')
     titles = []
     for i, line in enumerate(lines):
-        if ("관련" in line or "특약" in line) and len(line.strip()) > 5:
+        if ("관련" in line or "특약" in line or "기본계약" in line or "의무부가계약" in line) and len(line.strip()) > 5:
             titles.append(line.strip())
             print(f"\n발견된 제목: {line.strip()}")
 
