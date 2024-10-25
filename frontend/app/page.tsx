@@ -1,6 +1,8 @@
-'use client'
+import dynamic from 'next/dynamic'
 
-import { PDFProcessor } from '@/components/PDFProcessor'
+const PDFProcessor = dynamic(() => import('@/components/PDFProcessor'), {
+  ssr: false
+})
 
 export default function Home() {
   return (
@@ -9,4 +11,3 @@ export default function Home() {
     </main>
   )
 }
-
