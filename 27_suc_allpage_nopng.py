@@ -138,6 +138,6 @@ def main(pdf_path, output_excel_path):
     print(f"모든 페이지의 처리된 데이터가 {output_excel_path}에 저장되었습니다.")
 
 if __name__ == "__main__":
-    pdf_path = "/workspaces/automation/uploads/5. KB 5.10.10 플러스 건강보험(무배당)(24.05)_요약서_0801_v1.0.pdf"
+    pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
     output_excel_path = "/workspaces/automation/output/extracted_tables_camelot_all_pages.xlsx"
     main(pdf_path, output_excel_path)
