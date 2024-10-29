@@ -1,15 +1,16 @@
-from paddleocr import PPStructure
-import cv2
-import numpy as np
-import fitz
-from PIL import Image
-import pandas as pd
-from langchain.llms import LlamaCpp
-from langchain.callbacks.manager import CallbackManager
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 import os
 import logging
+import fitz
+import cv2
+import numpy as np
+from PIL import Image
+import pandas as pd
+from paddleocr import PPStructure
+from langchain_community.llms import LlamaCpp
+from langchain.callbacks.manager import CallbackManager
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 
+# 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class SinglePageAnalyzer:
             table=True,
             ocr=True,
             layout=True,
-            lang='ko'
+            lang='korean'  # 한국어 설정
         )
 
         # LLAMA 초기화
@@ -35,7 +36,7 @@ class SinglePageAnalyzer:
             n_ctx=2048
         )
 
-        # 색상 범위 정의
+        # 색상 범위 정의 (HSV)
         self.color_ranges = {
             'yellow': [(20, 100, 100), (40, 255, 255)],
             'green': [(40, 100, 100), (80, 255, 255)],
@@ -89,6 +90,7 @@ class SinglePageAnalyzer:
         1. 하이라이트된 셀들이 논리적으로 연결되어 있나요?
         2. 표의 구조상 위치가 적절한가요?
         3. 감지된 색상이 문맥에 맞나요?
+        4. 각 셀의 내용이 보험 약관의 맥락에서 의미가 있나요?
 
         분석 결과를 JSON 형식으로 제공해주세요.
         """
@@ -103,10 +105,10 @@ class SinglePageAnalyzer:
             # 페이지 이미지 추출
             logger.info(f"페이지 {page_num} 처리 시작")
             image = self.extract_page_image(pdf_path, page_num)
-            image = self.preprocess_image(image)
+            processed_image = self.preprocess_image(image)
             
             # PaddleOCR로 표 분석
-            result = self.table_engine(image)
+            result = self.table_engine(processed_image)
             tables_data = []
             
             for idx, region in enumerate(result):
@@ -136,9 +138,10 @@ class SinglePageAnalyzer:
                             logger.info(f"하이라이트 감지: {cell_info}")
                     
                     # LLAMA 검증
-                    validation = self.validate_with_llama(table_data)
-                    table_data['validation'] = validation
-                    tables_data.append(table_data)
+                    if table_data['highlighted_cells']:
+                        validation = self.validate_with_llama(table_data)
+                        table_data['validation'] = validation
+                        tables_data.append(table_data)
             
             return tables_data
             
@@ -146,10 +149,36 @@ class SinglePageAnalyzer:
             logger.error(f"페이지 처리 중 오류 발생: {str(e)}")
             raise
 
+def save_to_excel(tables_data, output_path):
+    """결과를 Excel 파일로 저장"""
+    try:
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            for table_data in tables_data:
+                if table_data['highlighted_cells']:
+                    df = pd.DataFrame(table_data['highlighted_cells'])
+                    sheet_name = f"Table_{table_data['table_index']}"
+                    
+                    # 데이터 저장
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    
+                    # 검증 결과 저장
+                    validation_df = pd.DataFrame([{'validation': table_data['validation']}])
+                    validation_df.to_excel(writer, 
+                                        sheet_name=sheet_name, 
+                                        startrow=len(df) + 2, 
+                                        index=False)
+        
+        logger.info(f"결과가 성공적으로 저장됨: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Excel 저장 중 오류 발생: {str(e)}")
+        raise
+
 def main():
     # 설정
     pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-    llama_model_path = "models/llama-2-7b-chat.gguf"  # LLAMA 모델 경로 설정
+    output_path = "page_59_analysis.xlsx"
+    llama_model_path = "models/llama-2-7b-chat.gguf"
     
     try:
         # 분석기 초기화
@@ -160,15 +189,11 @@ def main():
         results = analyzer.process_page(pdf_path, page_num=59)
         
         # 결과 저장
-        output_file = "page_59_analysis.xlsx"
-        with pd.ExcelWriter(output_file) as writer:
-            for table_data in results:
-                df = pd.DataFrame(table_data['highlighted_cells'])
-                df.to_excel(writer, 
-                          sheet_name=f"Table_{table_data['table_index']}",
-                          index=False)
-        
-        logger.info(f"분석 완료. 결과가 {output_file}에 저장되었습니다.")
+        if results:
+            save_to_excel(results, output_path)
+            logger.info(f"분석 완료. 결과가 {output_path}에 저장되었습니다.")
+        else:
+            logger.warning("감지된 하이라이트가 없습니다.")
         
     except Exception as e:
         logger.error(f"실행 중 오류 발생: {str(e)}")
