@@ -289,7 +289,7 @@ def main():
         analyzer = PDFHighlightAnalyzer()
         
         # 59페이지 분석
-        results = analyzer.process_page(pdf_path, page_num=59)
+        results = analyzer.process_page(pdf_path, page_num=60)
         
         # 결과 저장
         if results:
