@@ -170,7 +170,7 @@ def main(pdf_path, output_excel_path):
     doc = fitz.open(pdf_path)
     
     # 51페이지만 처리 (0-based index이므로 50)
-    page_number = 50
+    page_number = 59
     page = doc[page_number]
     image = pdf_to_image(page)
     
