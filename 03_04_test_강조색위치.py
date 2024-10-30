@@ -13,79 +13,25 @@ from sentence_transformers import SentenceTransformer
 from scipy.spatial.distance import cosine
 import cv2
 from PIL import Image
+from transformers import LayoutLMv3Processor, LayoutLMv3ForSequenceClassification, LayoutLMv3Model
+from transformers import LayoutLMv3FeatureExtractor
+from PIL import Image, ImageDraw
+import torch
+from datasets import Dataset
+import json
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class TitleMatcher:
+class DocumentAnalyzer:
     def __init__(self):
-        self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", apply_ocr=True)
+        self.model = LayoutLMv3Model.from_pretrained("microsoft/layoutlmv3-base")
+        self.model.to(self.device)
         
-    def get_embedding(self, text):
-        return self.model.encode(text)
-    
-    def calculate_similarity(self, text1, text2):
-        emb1 = self.get_embedding(text1)
-        emb2 = self.get_embedding(text2)
-        return 1 - cosine(emb1, emb2)
-
-class HighlightDetector:
-    @staticmethod
-    def pdf_to_image(page):
-        # 해상도 향상을 위한 매트릭스 적용
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2배 해상도로 증가
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        return np.array(img)
-
-    @staticmethod
-    def detect_highlights(image):
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        
-        # 초록색 음영 범위 정밀화
-        lower_green = np.array([40, 40, 40])  # 밝은 초록
-        upper_green = np.array([80, 255, 255])  # 어두운 초록
-        mask = cv2.inRange(hsv, lower_green, upper_green)
-
-        # 노이즈 제거를 위한 모폴로지 연산 파라미터 조정
-        kernel = np.ones((3,3), np.uint8)  # 커널 크기 축소
-        cleaned_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
-
-        contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        return contours
-
-    @staticmethod
-    def get_highlight_regions(contours, image_height):
-        regions = []
-        scale_factor = 2  # DPI 설정과 동일한 값
-        
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            # 좌표를 원본 크기로 변환
-            top = (image_height - (y + h)) / scale_factor
-            bottom = (image_height - y) / scale_factor
-            regions.append((top, bottom))
-        return regions
-
-    @staticmethod
-    def check_highlight(row_range, highlight_regions, row_height):
-        row_top, row_bottom = row_range
-        for region_top, region_bottom in highlight_regions:
-            # 교차 영역 계산
-            intersection = min(row_bottom, region_bottom) - max(row_top, region_top)
-            if intersection > row_height * 0.3:  # 30% 이상 교차
-                return True
-        return False
-
-class InsuranceDocumentAnalyzer:
-    def __init__(self):
+        # 기존 설정 유지
         self.section_patterns = {
             "종류": r'\[(\d)종\]',
             "특약유형": r'(상해관련|질병관련)\s*특약'
         }
-        self.section_pages = {"[1종]": None, "[2종]": None, "[3종]": None}
-        self.section_ranges = {}
         self.title_patterns = [
             r'기본계약',
             r'의무부가계약',
@@ -93,186 +39,156 @@ class InsuranceDocumentAnalyzer:
             r'[\w\s]+계약',
             r'[\w\s]+보장'
         ]
+        
+    def process_page(self, pdf_path: str, page_num: int):
+        """LayoutLM v3로 페이지 처리"""
+        doc = fitz.open(pdf_path)
+        page = doc[page_num]
+        pix = page.get_pixmap()
+        
+        # PDF 페이지를 이미지로 변환
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # LayoutLM v3 처리
+        encoding = self.processor(img, return_tensors="pt")
+        encoding = {k: v.to(self.device) for k, v in encoding.items()}
+        
+        # 모델 실행
+        with torch.no_grad():
+            outputs = self.model(**encoding)
+        
+        # 결과 분석
+        last_hidden_states = outputs.last_hidden_state
+        
+        # OCR 결과와 레이아웃 정보 추출
+        words = self.processor.tokenizer.convert_ids_to_tokens(encoding["input_ids"][0])
+        boxes = encoding["bbox"][0].cpu().numpy()
+        
+        return {
+            "words": words,
+            "boxes": boxes,
+            "features": last_hidden_states[0].cpu().numpy(),
+            "image": img
+        }
 
-    def find_section_pages(self, pdf_path: str) -> Dict[str, int]:
-        try:
-            doc = fitz.open(pdf_path)
-            total_pages = len(doc)
-            for page_num in range(total_pages):
-                text = doc[page_num].get_text()
-                
-                matches = re.finditer(self.section_patterns["종류"], text)
-                for match in matches:
-                    종_type = f"[{match.group(1)}종]"
-                    if self.section_pages[종_type] is None:
-                        self.section_pages[종_type] = page_num
-                        logger.info(f"{종_type} 시작 페이지: {page_num + 1}")
+    def detect_highlights(self, img, boxes):
+        """하이라이트된 영역 감지"""
+        img_np = np.array(img)
+        hsv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2HSV)
+        
+        # 초록색 범위 정의
+        lower_green = np.array([40, 40, 40])
+        upper_green = np.array([80, 255, 255])
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+        
+        highlighted_boxes = []
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box)
+            region = mask[y1:y2, x1:x2]
+            if region.mean() > 30:  # 하이라이트 임계값
+                highlighted_boxes.append(box)
+        
+        return highlighted_boxes
 
-            # 섹션을 찾았는지 확인
-            found_sections = [v for v in self.section_pages.values() if v is not None]
-            if not found_sections:
-                logger.warning("1종, 2종, 3종 패턴을 찾지 못했습니다. 문서 전체를 대상으로 진행합니다.")
-                self.section_ranges["전체"] = (0, total_pages)
-            else:
-                sorted_pages = sorted([(k, v) for k, v in self.section_pages.items() if v is not None], 
-                                    key=lambda x: x[1])
-                
-                for i, (종_type, start_page) in enumerate(sorted_pages):
-                    if i + 1 < len(sorted_pages):
-                        end_page = sorted_pages[i + 1][1]
-                    else:
-                        end_page = total_pages
-                    self.section_ranges[종_type] = (start_page, end_page)
-                    
-            doc.close()
-            return self.section_pages
+    def extract_table_info(self, page_result, camelot_tables):
+        """표 정보 추출 및 하이라이트 매핑"""
+        highlighted_boxes = self.detect_highlights(page_result["image"], page_result["boxes"])
+        
+        tables_info = []
+        for table in camelot_tables:
+            df = table.df.copy()
+            table_area = table._bbox
             
-        except Exception as e:
-            logger.error(f"Error finding section pages: {e}")
-            return {}
+            # 하이라이트된 행 식별
+            df['변경사항'] = ''
+            for idx, row in df.iterrows():
+                row_bbox = self.get_row_bbox(table, idx)
+                if self.check_highlight_overlap(row_bbox, highlighted_boxes):
+                    df.loc[idx, '변경사항'] = '추가'
+            
+            # 제목 찾기
+            title = self.find_table_title(page_result, table_area)
+            
+            tables_info.append({
+                'title': title,
+                'data': df,
+                'bbox': table_area
+            })
+        
+        return tables_info
+
+    def get_row_bbox(self, table, row_idx):
+        """표의 특정 행의 bbox 계산"""
+        y1 = table._bbox[1] + (row_idx * (table._bbox[3] - table._bbox[1]) / len(table.df))
+        y2 = y1 + ((table._bbox[3] - table._bbox[1]) / len(table.df))
+        return [table._bbox[0], y1, table._bbox[2], y2]
+
+    def check_highlight_overlap(self, row_bbox, highlighted_boxes):
+        """행과 하이라이트된 영역의 겹침 확인"""
+        def overlap(box1, box2):
+            x1, y1, x2, y2 = box1
+            x3, y3, x4, y4 = box2
+            
+            overlap_y = min(y2, y4) - max(y1, y3)
+            if overlap_y <= 0:
+                return False
+                
+            box_height = y2 - y1
+            overlap_ratio = overlap_y / box_height
+            return overlap_ratio > 0.3
+        
+        return any(overlap(row_bbox, hbox) for hbox in highlighted_boxes)
+
+    def find_table_title(self, page_result, table_area):
+        """표 제목 찾기"""
+        words = page_result["words"]
+        boxes = page_result["boxes"]
+        features = page_result["features"]
+        
+        # 표 위쪽 영역의 텍스트 검사
+        title_candidates = []
+        for word, box, feature in zip(words, boxes, features):
+            if box[1] < table_area[1] and box[3] < table_area[1]:  # 표 위쪽 텍스트
+                if any(re.search(pattern, word) for pattern in self.title_patterns):
+                    title_candidates.append({
+                        'text': word,
+                        'distance': table_area[1] - box[3],
+                        'feature': feature
+                    })
+        
+        if title_candidates:
+            # 가장 가까운 제목 선택
+            return min(title_candidates, key=lambda x: x['distance'])['text']
+        return "Untitled Table"
 
 class TableExtractor:
     def __init__(self):
-        self.matcher = TitleMatcher()
-        self.highlight_detector = HighlightDetector()
-        self.title_patterns = [
-            r'기본계약',
-            r'의무부가계약',
-            r'[\w\s]+관련\s*특약',
-            r'[\w\s]+계약',
-            r'[\w\s]+보장'
-        ]
+        self.document_analyzer = DocumentAnalyzer()
         self.max_distance = 50
-
-    def match_title_to_table(self, titles, table_position):
-        """표와 가장 적절한 제목 매칭"""
-        best_title = None
-        min_distance = float('inf')
-        
-        for title in titles:
-            if title["used"]:
-                continue
-                
-            # 제목과 표 사이의 거리 계산
-            distance = table_position["y_top"] - title["y_bottom"]
-            
-            # 제목이 표보다 위에 있고, 현재까지 찾은 것보다 더 가까운 경우
-            if 0 < distance < self.max_distance and distance < min_distance:
-                best_title = title
-                min_distance = distance
-        
-        # 매칭되는 제목을 찾은 경우
-        if best_title:
-            best_title["used"] = True  # 이 제목이 사용되었음을 표시
-            return best_title["text"], min_distance
-            
-        return None, None
-
-    def get_titles_with_positions(self, page) -> List[Dict]:
-        titles = []
-        blocks = page.get_text("dict")["blocks"]
-        
-        for block in blocks:
-            if block.get("lines"):
-                text = ""
-                y_top = block["bbox"][1]
-                y_bottom = block["bbox"][3]
-                
-                for line in block["lines"]:
-                    for span in line["spans"]:
-                        text += span["text"] + " "
-                
-                text = text.strip()
-                if text and any(re.search(pattern, text) for pattern in self.title_patterns):
-                    titles.append({
-                        "text": text,
-                        "y_top": y_top,
-                        "y_bottom": y_bottom,
-                        "bbox": block["bbox"],
-                        "used": False
-                    })
-        
-        return sorted(titles, key=lambda x: x["y_top"])
-
-    def get_table_positions(self, table, page_height):
-        x0, y0, x1, y1 = table._bbox
-        # 좌표 변환시 오프셋 보정 적용
-        row_height = (y1 - y0) / len(table.df)
-        offset_correction = row_height / 2
-        
-        converted_y0 = page_height - (y1 + offset_correction)  # 상단
-        converted_y1 = page_height - (y0 + offset_correction)  # 하단
-        
-        return {
-            "y_top": converted_y0,
-            "y_bottom": converted_y1,
-            "bbox": (x0, converted_y0, x1, converted_y1)
-        }
-
-    def process_table_with_highlights(self, table, highlight_regions, page_height):
-        df = table.df.copy()
-        x1, y1, x2, y2 = table._bbox
-        table_height = y2 - y1
-        row_height = table_height / len(df)
-        
-        # 오프셋 보정값 추가
-        offset_correction = row_height / 2
-        
-        df['변경사항'] = ''
-        
-        for row_index in range(len(df)):
-            # 수정된 좌표 계산
-            row_bottom = y2 - row_index * row_height - offset_correction
-            row_top = row_bottom - row_height
-            
-            # 교차 영역 비율 기반 하이라이트 체크
-            if self.highlight_detector.check_highlight(
-                (row_top, row_bottom), 
-                highlight_regions,
-                row_height
-            ):
-                df.loc[row_index, '변경사항'] = '추가'
-
-        return df
 
     def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
         try:
             results = []
-            
             for page_num in range(start_page, end_page):
                 doc = fitz.open(pdf_path)
-                page = doc[page_num]
                 
-                # 하이라이트 감지
-                image = self.highlight_detector.pdf_to_image(page)
-                contours = self.highlight_detector.detect_highlights(image)
-                highlight_regions = self.highlight_detector.get_highlight_regions(contours, image.shape[0])
+                # LayoutLM v3로 페이지 분석
+                page_result = self.document_analyzer.process_page(pdf_path, page_num)
                 
-                # 제목 추출
-                titles = self.get_titles_with_positions(page)
-                
-                # 표 추출
+                # Camelot으로 표 추출
                 tables = self.extract_with_camelot(pdf_path, page_num + 1)
                 
                 if tables:
-                    page_height = page.rect.height
+                    # 표 정보 추출 및 하이라이트 매핑
+                    tables_info = self.document_analyzer.extract_table_info(page_result, tables)
                     
-                    for table in tables:
-                        table_position = self.get_table_positions(table, page_height)
-                        title, distance = self.match_title_to_table(titles, table_position)
-                        
-                        # 하이라이트 정보를 포함한 테이블 처리
-                        df = self.process_table_with_highlights(table, highlight_regions, page_height)
-                        df = self.clean_table(df)
+                    for table_info in tables_info:
+                        title = table_info['title']
+                        df = table_info['data']
                         
                         if not df.empty:
-                            if title:
-                                logger.info(f"Found table with title: {title} (distance: {distance:.1f})")
-                            else:
-                                title = "Untitled Table"
-                                logger.warning(f"No matching title found for table on page {page_num + 1}")
-                            
                             results.append((title, df, page_num + 1))
+                            logger.info(f"Found table with title: {title} on page {page_num + 1}")
                             
                 doc.close()
                 
@@ -284,11 +200,13 @@ class TableExtractor:
 
     def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
         try:
+            # 격자 형식 시도
             tables = camelot.read_pdf(
                 pdf_path,
                 pages=str(page_num),
                 flavor='lattice'
             )
+            # 격자 형식으로 추출 실패시 스트림 형식 시도
             if not tables:
                 tables = camelot.read_pdf(
                     pdf_path,
@@ -299,15 +217,6 @@ class TableExtractor:
         except Exception as e:
             logger.error(f"Camelot extraction failed: {str(e)}")
             return []
-
-    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
-        try:
-            df = df.dropna(how='all')
-            df = df[~df.iloc[:, 0].str.contains("※|주)", regex=False, na=False)]
-            return df
-        except Exception as e:
-            logger.error(f"Error cleaning table: {e}")
-            return pd.DataFrame()
 
 class ExcelWriter:
     @staticmethod
@@ -346,14 +255,18 @@ class ExcelWriter:
                         # 제목 스타일링
                         title_cell = worksheet.cell(row=current_row + 1, column=1)
                         title_cell.font = Font(bold=True, size=12)
-                        title_cell.fill = PatternFill(start_color='E6E6E6',
-                                                    end_color='E6E6E6',
-                                                    fill_type='solid')
+                        title_cell.fill = PatternFill(
+                            start_color='E6E6E6',
+                            end_color='E6E6E6',
+                            fill_type='solid'
+                        )
                         
                         # 하이라이트 스타일링
-                        yellow_fill = PatternFill(start_color='FFFF00',
-                                                end_color='FFFF00',
-                                                fill_type='solid')
+                        yellow_fill = PatternFill(
+                            start_color='FFFF00',
+                            end_color='FFFF00',
+                            fill_type='solid'
+                        )
                         
                         if '변경사항' in df.columns:
                             for idx, row in enumerate(df.itertuples(), start=1):
@@ -371,9 +284,8 @@ class ExcelWriter:
 
 def main():
     try:
-        # 파일 경로 설정
-        pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-        output_path = "/workspaces/automation/output/보험특약표.xlsx"
+        pdf_path = "input.pdf"
+        output_path = "output.xlsx"
         
         if not os.path.exists(pdf_path):
             logger.error("PDF file not found")
@@ -381,28 +293,18 @@ def main():
 
         # 문서 분석기 초기화
         logger.info("문서 분석 시작...")
-        document_analyzer = InsuranceDocumentAnalyzer()
-        section_pages = document_analyzer.find_section_pages(pdf_path)
-
-        # 섹션 범위가 설정되었는지 확인
-        if not document_analyzer.section_ranges:
-            logger.warning("섹션을 찾지 못했습니다. 문서 전체를 대상으로 진행합니다.")
-            doc = fitz.open(pdf_path)
-            total_pages = len(doc)
-            document_analyzer.section_ranges["전체"] = (0, total_pages)
-            doc.close()
-
-        # 표 추출기 초기화
-        logger.info("표 추출 시작...")
+        document_analyzer = DocumentAnalyzer()
         table_extractor = TableExtractor()
-        sections_data = {}
         
-        # 각 섹션별 표 추출
-        for section, (start_page, end_page) in document_analyzer.section_ranges.items():
-            logger.info(f"Processing {section} (pages {start_page + 1} to {end_page})")
-            logger.info(f"하이라이트 및 표 분석 중... ({section})")
-            tables = table_extractor.extract_tables_from_section(pdf_path, start_page, end_page)
-            sections_data[section] = tables
+        # PDF 파일 열기
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        doc.close()
+
+        # 전체 문서를 하나의 섹션으로 처리
+        sections_data = {
+            "전체": table_extractor.extract_tables_from_section(pdf_path, 0, total_pages)
+        }
 
         # 결과 저장
         if any(sections_data.values()):
