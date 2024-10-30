@@ -361,7 +361,7 @@ class ExcelWriter:
 def main():
     try:
         # 파일 경로 설정
-        pdf_path = "/workspaces/automation/uploads/KB 플러스 운전자상해보험(무배당)(24.11)_요약서_v0.2.pdf"
+        pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
         output_path = "보험특약표.xlsx"
         
         if not os.path.exists(pdf_path):
