@@ -161,14 +161,23 @@ class PDFTableExtractor:
             return []
 
 def main():
-    # 설정
+    # 실제 경로 설정
     pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-    output_path = "path/to/output.xlsx"
+    output_folder = "/workspaces/automation/output"
+    os.makedirs(output_folder, exist_ok=True)  # 출력 폴더가 없으면 생성
+    
+    output_filename = "extracted_tables.xlsx"
+    output_path = os.path.join(output_folder, output_filename)
     
     # PDF 테이블 추출기 초기화
     extractor = PDFTableExtractor()
     
     try:
+        # PDF 파일 존재 확인
+        if not os.path.exists(pdf_path):
+            logger.error(f"PDF file not found: {pdf_path}")
+            return
+            
         # PDF 파일 열기 및 페이지 수 확인
         doc = fitz.open(pdf_path)
         total_pages = len(doc)
