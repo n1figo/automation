@@ -13,6 +13,7 @@ from sentence_transformers import SentenceTransformer
 from scipy.spatial.distance import cosine
 import cv2
 from PIL import Image
+from collections import defaultdict
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -23,60 +24,57 @@ class HighlightDetector:
         self.saturation_threshold = 30
         self.kernel_size = (5, 5)
 
-    def pdf_to_image(self, page: fitz.Page) -> np.ndarray:
+    def pdf_to_image(self, page: fitz.Page) -> Tuple[np.ndarray, float]:
         """PDF 페이지를 이미지로 변환 - 정밀도 향상"""
         zoom = 2  # 정밀도를 위해 해상도 증가
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        return np.array(img)
+        return np.array(img), zoom
 
-    def detect_highlights(self, image: np.ndarray) -> List[Tuple[float, float, float, float]]:
-        """하이라이트 영역 감지 및 정규화된 좌표 반환"""
-        image_height, image_width = image.shape[:2]
-        
+    def detect_highlights(self, image: np.ndarray, zoom: float, page_height: float) -> List[Tuple[float, float, float, float]]:
+        """하이라이트 영역 감지 및 PDF 좌표 반환"""
+
         # HSV 변환 및 마스크 생성
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        saturation_mask = hsv[:,:,1] > self.saturation_threshold
-        _, value_mask = cv2.threshold(hsv[:,:,2], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
+        saturation_mask = hsv[:, :, 1] > self.saturation_threshold
+        _, value_mask = cv2.threshold(hsv[:, :, 2], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         # 마스크 결합 및 노이즈 제거
         combined_mask = np.logical_and(saturation_mask, value_mask > 0).astype(np.uint8) * 255
         kernel = np.ones(self.kernel_size, np.uint8)
         cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
         cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
-        
+
         # 컨투어 찾기
         contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # 정규화된 좌표 반환
+
+        # PDF 좌표 반환
         highlight_regions = []
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
-            # 좌표 정규화
-            x_norm = x / image_width
-            y_norm = y / image_height
-            w_norm = w / image_width
-            h_norm = h / image_height
-            
-            # y 좌표 반전 (PDF 좌표계와 일치시키기 위함)
-            y_norm = 1 - y_norm - h_norm
-            
-            highlight_regions.append((x_norm, y_norm, w_norm, h_norm))
-        
+            # 좌표 변환
+            x_pdf = x / zoom
+            w_pdf = w / zoom
+            h_pdf = h / zoom
+            y_image = y + h  # 이미지 좌표계에서의 하단 y 좌표
+            y_pdf = (image.shape[0] - y_image) / zoom  # PDF 좌표계에서의 y 좌표
+
+            highlight_regions.append((x_pdf, y_pdf, w_pdf, h_pdf))
+
         return highlight_regions
 
-    def get_highlight_regions(self, image: np.ndarray) -> List[Tuple[float, float, float, float]]:
+    def get_highlight_regions(self, image: np.ndarray, zoom: float, page_height: float) -> List[Tuple[float, float, float, float]]:
         """이미지에서 하이라이트 영역 추출"""
-        return self.detect_highlights(image)
+        return self.detect_highlights(image, zoom, page_height)
 
 class TitleMatcher:
     def __init__(self):
         self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
-        
+
     def get_embedding(self, text: str) -> np.ndarray:
         return self.model.encode(text)
-    
+
     def calculate_similarity(self, text1: str, text2: str) -> float:
         emb1 = self.get_embedding(text1)
         emb2 = self.get_embedding(text2)
@@ -105,7 +103,7 @@ class InsuranceDocumentAnalyzer:
             total_pages = len(doc)
             for page_num in range(total_pages):
                 text = doc[page_num].get_text()
-                
+
                 matches = re.finditer(self.section_patterns["종류"], text)
                 for match in matches:
                     종_type = f"[{match.group(1)}종]"
@@ -121,9 +119,9 @@ class InsuranceDocumentAnalyzer:
                 self.section_ranges["전체"] = (0, total_pages)
             else:
                 # 찾은 섹션들로 범위 설정
-                sorted_pages = sorted([(k, v) for k, v in self.section_pages.items() if v is not None], 
-                                    key=lambda x: x[1])
-                
+                sorted_pages = sorted([(k, v) for k, v in self.section_pages.items() if v is not None],
+                                      key=lambda x: x[1])
+
                 for i, (종_type, start_page) in enumerate(sorted_pages):
                     if i + 1 < len(sorted_pages):
                         end_page = sorted_pages[i + 1][1]
@@ -131,10 +129,10 @@ class InsuranceDocumentAnalyzer:
                         end_page = total_pages
                     self.section_ranges[종_type] = (start_page, end_page)
                     logger.info(f"{종_type} 범위: {start_page + 1} ~ {end_page}")
-            
+
             doc.close()
             return self.section_pages
-            
+
         except Exception as e:
             logger.error(f"Error finding section pages: {e}")
             return {}
@@ -142,7 +140,6 @@ class InsuranceDocumentAnalyzer:
     def get_section_ranges(self) -> Dict[str, Tuple[int, int]]:
         """섹션 범위 반환"""
         return self.section_ranges
-
 
 class TableExtractor:
     def __init__(self):
@@ -161,17 +158,17 @@ class TableExtractor:
         """페이지에서 제목과 위치 정보 추출"""
         titles = []
         blocks = page.get_text("dict")["blocks"]
-        
+
         for block in blocks:
             if block.get("lines"):
                 text = ""
                 y_top = block["bbox"][1]
                 y_bottom = block["bbox"][3]
-                
+
                 for line in block["lines"]:
                     for span in line["spans"]:
                         text += span["text"] + " "
-                
+
                 text = text.strip()
                 if text and any(re.search(pattern, text) for pattern in self.title_patterns):
                     titles.append({
@@ -181,7 +178,7 @@ class TableExtractor:
                         "bbox": block["bbox"],
                         "used": False
                     })
-        
+
         return sorted(titles, key=lambda x: x["y_top"])
 
     def get_table_positions(self, table, page_height):
@@ -189,7 +186,7 @@ class TableExtractor:
         x0, y0, x1, y1 = table._bbox
         converted_y0 = page_height - y1  # 상단
         converted_y1 = page_height - y0  # 하단
-        
+
         return {
             "y_top": converted_y0,
             "y_bottom": converted_y1,
@@ -200,16 +197,16 @@ class TableExtractor:
         """표와 가장 적절한 제목 매칭"""
         best_title = None
         min_distance = float('inf')
-        
+
         for title in titles:
             if title["used"]:
                 continue
-                
+
             distance = table_position["y_top"] - title["y_bottom"]
             if 0 < distance < self.max_distance and distance < min_distance:
                 best_title = title
                 min_distance = distance
-        
+
         if best_title:
             best_title["used"] = True
             return best_title["text"], min_distance
@@ -219,35 +216,40 @@ class TableExtractor:
         """개선된 테이블 처리 및 하이라이트 감지"""
         df = table.df.copy()
         page_height = page.rect.height
-        
+
         # 하이라이트 감지
-        image = self.highlight_detector.pdf_to_image(page)
-        highlight_regions = self.highlight_detector.get_highlight_regions(image)
-        
+        image, zoom = self.highlight_detector.pdf_to_image(page)
+        highlight_regions = self.highlight_detector.detect_highlights(image, zoom, page_height)
+
         # 메타데이터 컬럼 추가
         df['변경사항'] = ''
         df['페이지'] = page_num
-        
-        # 각 셀의 좌표 계산
-        for row_idx, row in enumerate(table.cells):
-            # 셀의 실제 좌표 계산
-            y1 = row[0].y1
-            y2 = row[0].y2
-            
-            # PDF 좌표계로 변환
-            row_top = (page_height - y2) / page_height
-            row_bottom = (page_height - y1) / page_height
-            
+
+        # 행 인덱스별 셀 매핑
+        row_cells = defaultdict(list)
+        for cell in table.cells:
+            row_cells[cell.row].append(cell)
+
+        # 각 행에 대해 처리
+        for row_idx in range(len(df)):
+            cells_in_row = row_cells.get(row_idx, [])
+            if not cells_in_row:
+                continue
+
+            # 해당 행의 y 좌표 계산
+            row_y1 = min(cell.y1 for cell in cells_in_row)
+            row_y2 = max(cell.y2 for cell in cells_in_row)
+
             # 하이라이트 확인
             for hl_x, hl_y, hl_w, hl_h in highlight_regions:
-                hl_top = hl_y
-                hl_bottom = hl_y + hl_h
-                
+                hl_y1 = hl_y
+                hl_y2 = hl_y + hl_h
+
                 # 겹침 확인
-                if (hl_top <= row_top <= hl_bottom) or \
-                   (hl_top <= row_bottom <= hl_bottom) or \
-                   (row_top <= hl_top <= row_bottom) or \
-                   (row_top <= hl_bottom <= row_bottom):
+                if (hl_y1 <= row_y1 <= hl_y2) or \
+                   (hl_y1 <= row_y2 <= hl_y2) or \
+                   (row_y1 <= hl_y1 <= row_y2) or \
+                   (row_y1 <= hl_y2 <= row_y2):
                     df.loc[row_idx, '변경사항'] = '추가'
                     break
 
@@ -257,41 +259,41 @@ class TableExtractor:
         """섹션별 테이블 추출 - 개선된 버전"""
         try:
             results = []
-            
+
             for page_num in range(start_page, end_page):
                 doc = fitz.open(pdf_path)
                 page = doc[page_num]
-                
+
                 # 제목 추출
                 titles = self.get_titles_with_positions(page)
-                
+
                 # 표 추출
                 tables = self.extract_with_camelot(pdf_path, page_num + 1)
-                
+
                 if tables:
                     page_height = page.rect.height
-                    
+
                     for table_idx, table in enumerate(tables, 1):
                         table_position = self.get_table_positions(table, page_height)
                         title, distance = self.match_title_to_table(titles, table_position)
-                        
+
                         # 개선된 테이블 처리
                         df = self.process_table_with_highlights(table, page, page_num + 1)
                         df = self.clean_table(df)
-                        
+
                         if not df.empty:
                             if title:
                                 logger.info(f"Found table {table_idx} with title: {title} (distance: {distance:.1f})")
                             else:
                                 title = f"Table_{table_idx}"
                                 logger.warning(f"No matching title found for table {table_idx} on page {page_num + 1}")
-                            
+
                             results.append((title, df, page_num + 1))
-                            
+
                 doc.close()
-                
+
             return results
-            
+
         except Exception as e:
             logger.error(f"Error extracting tables from section: {e}")
             return []
@@ -334,10 +336,10 @@ class ExcelWriter:
                 for section, tables in sections_data.items():
                     if not tables:
                         continue
-                        
+
                     sheet_name = section.replace("[", "").replace("]", "")
                     current_row = 0
-                    
+
                     for title, df, page_num in tables:
                         # 제목 쓰기 (페이지 번호 포함)
                         title_df = pd.DataFrame([[f"{title} (페이지: {page_num})"]], columns=[''])
@@ -348,7 +350,7 @@ class ExcelWriter:
                             index=False,
                             header=False
                         )
-                        
+
                         # 표 데이터 쓰기
                         df.to_excel(
                             writer,
@@ -356,25 +358,25 @@ class ExcelWriter:
                             startrow=current_row + 2,
                             index=False
                         )
-                        
+
                         # 스타일 적용
                         worksheet = writer.sheets[sheet_name]
-                        
+
                         # 제목 스타일링
                         title_cell = worksheet.cell(row=current_row + 1, column=1)
                         title_cell.font = Font(bold=True, size=12)
                         title_cell.fill = PatternFill(start_color='E6E6E6',
-                                                    end_color='E6E6E6',
-                                                    fill_type='solid')
-                        
+                                                      end_color='E6E6E6',
+                                                      fill_type='solid')
+
                         # 하이라이트 스타일링
                         yellow_fill = PatternFill(start_color='FFFF00',
-                                                end_color='FFFF00',
-                                                fill_type='solid')
-                        
+                                                  end_color='FFFF00',
+                                                  fill_type='solid')
+
                         # 데이터 행 시작 위치 (제목 + 2)
                         data_start_row = current_row + 3
-                        
+
                         # 변경사항 컬럼이 있는 경우 하이라이트 처리
                         if '변경사항' in df.columns:
                             for idx, row in enumerate(df.itertuples(), start=0):
@@ -382,16 +384,16 @@ class ExcelWriter:
                                     for col in range(1, len(df.columns) + 1):
                                         cell = worksheet.cell(row=data_start_row + idx, column=col)
                                         cell.fill = yellow_fill
-                        
+
                         # 자동 열 너비 조정
                         for column_cells in worksheet.columns:
                             length = max(len(str(cell.value) if cell.value else "") for cell in column_cells)
                             worksheet.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 50)
-                        
+
                         current_row += len(df) + 5
 
             logger.info(f"Successfully saved tables to {output_path}")
-            
+
         except Exception as e:
             logger.error(f"Error saving to Excel: {str(e)}")
 
@@ -402,7 +404,7 @@ def main():
         output_folder = "/workspaces/automation/output"
         os.makedirs(output_folder, exist_ok=True)
         output_path = os.path.join(output_folder, "보험특약표.xlsx")
-        
+
         if not os.path.exists(pdf_path):
             logger.error("PDF file not found")
             return
@@ -424,7 +426,7 @@ def main():
         logger.info("표 추출 시작...")
         table_extractor = TableExtractor()
         sections_data = {}
-        
+
         # 각 섹션별 표 추출
         for section, (start_page, end_page) in document_analyzer.section_ranges.items():
             logger.info(f"Processing {section} (pages {start_page + 1} to {end_page})")
