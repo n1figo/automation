@@ -13,7 +13,6 @@ from sentence_transformers import SentenceTransformer
 from scipy.spatial.distance import cosine
 import cv2
 from PIL import Image
-from collections import defaultdict
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -225,31 +224,30 @@ class TableExtractor:
         df['변경사항'] = ''
         df['페이지'] = page_num
 
-        # 행 인덱스별 셀 매핑
-        row_cells = defaultdict(list)
-        for cell in table.cells:
-            row_cells[cell.row].append(cell)
+        # 테이블의 bounding box 가져오기
+        x0, y0, x1, y1 = table._bbox
+        y0_pdf = page_height - y1  # PDF 좌표계로 변환 (상단)
+        y1_pdf = page_height - y0  # PDF 좌표계로 변환 (하단)
 
-        # 각 행에 대해 처리
-        for row_idx in range(len(df)):
-            cells_in_row = row_cells.get(row_idx, [])
-            if not cells_in_row:
-                continue
+        table_height = y1_pdf - y0_pdf
+        num_rows = len(df)
+        row_height = table_height / num_rows if num_rows > 0 else 0
 
-            # 해당 행의 y 좌표 계산
-            row_y1 = min(cell.y1 for cell in cells_in_row)
-            row_y2 = max(cell.y2 for cell in cells_in_row)
+        # 각 행의 위치 계산 및 하이라이트 겹침 확인
+        for row_idx in range(num_rows):
+            row_top = y1_pdf - row_idx * row_height
+            row_bottom = y1_pdf - (row_idx + 1) * row_height
 
-            # 하이라이트 확인
+            # 하이라이트와 겹치는지 확인
             for hl_x, hl_y, hl_w, hl_h in highlight_regions:
                 hl_y1 = hl_y
                 hl_y2 = hl_y + hl_h
 
                 # 겹침 확인
-                if (hl_y1 <= row_y1 <= hl_y2) or \
-                   (hl_y1 <= row_y2 <= hl_y2) or \
-                   (row_y1 <= hl_y1 <= row_y2) or \
-                   (row_y1 <= hl_y2 <= row_y2):
+                if (hl_y1 <= row_top <= hl_y2) or \
+                   (hl_y1 <= row_bottom <= hl_y2) or \
+                   (row_top <= hl_y1 <= row_bottom) or \
+                   (row_top <= hl_y2 <= row_bottom):
                     df.loc[row_idx, '변경사항'] = '추가'
                     break
 
@@ -379,8 +377,8 @@ class ExcelWriter:
 
                         # 변경사항 컬럼이 있는 경우 하이라이트 처리
                         if '변경사항' in df.columns:
-                            for idx, row in enumerate(df.itertuples(), start=0):
-                                if getattr(row, '변경사항') == '추가':
+                            for idx, row in df.iterrows():
+                                if row['변경사항'] == '추가':
                                     for col in range(1, len(df.columns) + 1):
                                         cell = worksheet.cell(row=data_start_row + idx, column=col)
                                         cell.fill = yellow_fill
