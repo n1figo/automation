@@ -399,7 +399,7 @@ def main():
     try:
         # 파일 경로 설정
         pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-        output_folder = "/workspaces/output"
+        output_folder = "/workspaces/automation/output"
         os.makedirs(output_folder, exist_ok=True)
         output_path = os.path.join(output_folder, "보험특약표.xlsx")
         
