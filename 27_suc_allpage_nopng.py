@@ -1,3 +1,4 @@
+# 강조색 정확하게 엑셀에 옮김
 import camelot
 import pandas as pd
 import numpy as np
