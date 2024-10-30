@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Optional
 import os
 import pandas as pd
 import camelot
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Alignment, Font
 from sentence_transformers import SentenceTransformer
 from scipy.spatial.distance import cosine
@@ -23,49 +23,41 @@ class HighlightDetector:
         self.saturation_threshold = 30
         self.kernel_size = (5, 5)
 
-    def pdf_to_image(self, page: fitz.Page) -> Tuple[np.ndarray, float]:
-        """PDF 페이지를 이미지로 변환 - 정밀도 향상"""
-        zoom = 2  # 정밀도를 위해 해상도 증가
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat)
+    def pdf_to_image(self, page: fitz.Page) -> np.ndarray:
+        """PDF 페이지를 이미지로 변환"""
+        pix = page.get_pixmap()
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        return np.array(img), zoom
+        return np.array(img)
 
-    def detect_highlights(self, image: np.ndarray, zoom: float, page_height: float) -> List[Tuple[float, float, float, float]]:
-        """하이라이트 영역 감지 및 PDF 좌표 반환"""
-
-        # HSV 변환 및 마스크 생성
+    def detect_highlights(self, image: np.ndarray) -> List[np.ndarray]:
+        """하이라이트 영역 감지 및 컨투어 반환"""
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        saturation_mask = hsv[:, :, 1] > self.saturation_threshold
-        _, value_mask = cv2.threshold(hsv[:, :, 2], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        s = hsv[:, :, 1]
+        v = hsv[:, :, 2]
 
-        # 마스크 결합 및 노이즈 제거
-        combined_mask = np.logical_and(saturation_mask, value_mask > 0).astype(np.uint8) * 255
+        saturation_mask = s > self.saturation_threshold
+
+        _, binary = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        combined_mask = cv2.bitwise_and(binary, binary, mask=saturation_mask.astype(np.uint8) * 255)
+
         kernel = np.ones(self.kernel_size, np.uint8)
         cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
         cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
 
-        # 컨투어 찾기
         contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # PDF 좌표 반환
-        highlight_regions = []
+        return contours
+
+    def get_highlight_regions(self, contours: List[np.ndarray], image_height: int) -> List[Tuple[float, float]]:
+        """컨투어를 하이라이트 영역으로 변환 (상단, 하단)"""
+        regions = []
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
-            # 좌표 변환
-            x_pdf = x / zoom
-            w_pdf = w / zoom
-            h_pdf = h / zoom
-            y_image = y + h  # 이미지 좌표계에서의 하단 y 좌표
-            y_pdf = (image.shape[0] - y_image) / zoom  # PDF 좌표계에서의 y 좌표
-
-            highlight_regions.append((x_pdf, y_pdf, w_pdf, h_pdf))
-
-        return highlight_regions
-
-    def get_highlight_regions(self, image: np.ndarray, zoom: float, page_height: float) -> List[Tuple[float, float, float, float]]:
-        """이미지에서 하이라이트 영역 추출"""
-        return self.detect_highlights(image, zoom, page_height)
+            top = image_height - (y + h)
+            bottom = image_height - y
+            regions.append((top, bottom))
+        return regions
 
 class TitleMatcher:
     def __init__(self):
@@ -211,90 +203,44 @@ class TableExtractor:
             return best_title["text"], min_distance
         return None, None
 
-    def process_table_with_highlights(self, table, page: fitz.Page, page_num: int) -> pd.DataFrame:
-        """개선된 테이블 처리 및 하이라이트 감지"""
+    def check_highlight(self, row_range: Tuple[float, float], highlight_regions: List[Tuple[float, float]]) -> bool:
+        """행이 하이라이트 영역과 겹치는지 확인"""
+        row_top, row_bottom = row_range
+        for region_top, region_bottom in highlight_regions:
+            if (region_top <= row_top <= region_bottom) or \
+               (region_top <= row_bottom <= region_bottom) or \
+               (row_top <= region_top <= row_bottom) or \
+               (row_top <= region_bottom <= row_bottom):
+                return True
+        return False
+
+    def process_table_with_highlights(self, table, highlight_regions: List[Tuple[float, float]], page_height: int, table_index: int, page_num: int) -> pd.DataFrame:
+        """테이블 처리 및 하이라이트 감지"""
         df = table.df.copy()
-        page_height = page.rect.height
+        x1, y1, x2, y2 = table._bbox
 
-        # 하이라이트 감지
-        image, zoom = self.highlight_detector.pdf_to_image(page)
-        highlight_regions = self.highlight_detector.detect_highlights(image, zoom, page_height)
-
-        # 메타데이터 컬럼 추가
-        df['변경사항'] = ''
-        df['페이지'] = page_num
-
-        # 테이블의 bounding box 가져오기
-        x0, y0, x1, y1 = table._bbox
-        y0_pdf = page_height - y1  # PDF 좌표계로 변환 (상단)
-        y1_pdf = page_height - y0  # PDF 좌표계로 변환 (하단)
-
-        table_height = y1_pdf - y0_pdf
+        table_height = y2 - y1
         num_rows = len(df)
-        row_height = table_height / num_rows if num_rows > 0 else 0
+        if num_rows == 0:
+            return df
 
-        # 각 행의 위치 계산 및 하이라이트 겹침 확인
-        for row_idx in range(num_rows):
-            row_top = y1_pdf - row_idx * row_height
-            row_bottom = y1_pdf - (row_idx + 1) * row_height
+        row_height = table_height / num_rows
 
-            # 하이라이트와 겹치는지 확인
-            for hl_x, hl_y, hl_w, hl_h in highlight_regions:
-                hl_y1 = hl_y
-                hl_y2 = hl_y + hl_h
+        processed_data = []
 
-                # 겹침 확인
-                if (hl_y1 <= row_top <= hl_y2) or \
-                   (hl_y1 <= row_bottom <= hl_y2) or \
-                   (row_top <= hl_y1 <= row_bottom) or \
-                   (row_top <= hl_y2 <= row_bottom):
-                    df.loc[row_idx, '변경사항'] = '추가'
-                    break
+        for row_index in range(num_rows):
+            row_data = df.iloc[row_index].copy()
 
-        return df
+            row_top = y2 - (row_index + 1) * row_height
+            row_bottom = y2 - row_index * row_height
 
-    def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[Tuple[str, pd.DataFrame, int]]:
-        """섹션별 테이블 추출 - 개선된 버전"""
-        try:
-            results = []
+            row_highlighted = self.check_highlight((row_top, row_bottom), highlight_regions)
+            row_data['변경사항'] = '추가' if row_highlighted else ''
+            row_data['Table_Number'] = table_index + 1
+            row_data['페이지'] = page_num
+            processed_data.append(row_data)
 
-            for page_num in range(start_page, end_page):
-                doc = fitz.open(pdf_path)
-                page = doc[page_num]
-
-                # 제목 추출
-                titles = self.get_titles_with_positions(page)
-
-                # 표 추출
-                tables = self.extract_with_camelot(pdf_path, page_num + 1)
-
-                if tables:
-                    page_height = page.rect.height
-
-                    for table_idx, table in enumerate(tables, 1):
-                        table_position = self.get_table_positions(table, page_height)
-                        title, distance = self.match_title_to_table(titles, table_position)
-
-                        # 개선된 테이블 처리
-                        df = self.process_table_with_highlights(table, page, page_num + 1)
-                        df = self.clean_table(df)
-
-                        if not df.empty:
-                            if title:
-                                logger.info(f"Found table {table_idx} with title: {title} (distance: {distance:.1f})")
-                            else:
-                                title = f"Table_{table_idx}"
-                                logger.warning(f"No matching title found for table {table_idx} on page {page_num + 1}")
-
-                            results.append((title, df, page_num + 1))
-
-                doc.close()
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Error extracting tables from section: {e}")
-            return []
+        return pd.DataFrame(processed_data)
 
     def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
         """Camelot을 사용한 표 추출"""
@@ -325,83 +271,13 @@ class TableExtractor:
             logger.error(f"Error cleaning table: {e}")
             return pd.DataFrame()
 
-class ExcelWriter:
-    @staticmethod
-    def save_to_excel(sections_data: Dict[str, List[Tuple[str, pd.DataFrame, int]]], output_path: str):
-        """개선된 Excel 저장 메서드"""
-        try:
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                for section, tables in sections_data.items():
-                    if not tables:
-                        continue
-
-                    sheet_name = section.replace("[", "").replace("]", "")
-                    current_row = 0
-
-                    for title, df, page_num in tables:
-                        # 제목 쓰기 (페이지 번호 포함)
-                        title_df = pd.DataFrame([[f"{title} (페이지: {page_num})"]], columns=[''])
-                        title_df.to_excel(
-                            writer,
-                            sheet_name=sheet_name,
-                            startrow=current_row,
-                            index=False,
-                            header=False
-                        )
-
-                        # 표 데이터 쓰기
-                        df.to_excel(
-                            writer,
-                            sheet_name=sheet_name,
-                            startrow=current_row + 2,
-                            index=False
-                        )
-
-                        # 스타일 적용
-                        worksheet = writer.sheets[sheet_name]
-
-                        # 제목 스타일링
-                        title_cell = worksheet.cell(row=current_row + 1, column=1)
-                        title_cell.font = Font(bold=True, size=12)
-                        title_cell.fill = PatternFill(start_color='E6E6E6',
-                                                      end_color='E6E6E6',
-                                                      fill_type='solid')
-
-                        # 하이라이트 스타일링
-                        yellow_fill = PatternFill(start_color='FFFF00',
-                                                  end_color='FFFF00',
-                                                  fill_type='solid')
-
-                        # 데이터 행 시작 위치 (제목 + 2)
-                        data_start_row = current_row + 3
-
-                        # 변경사항 컬럼이 있는 경우 하이라이트 처리
-                        if '변경사항' in df.columns:
-                            for idx, row in df.iterrows():
-                                if row['변경사항'] == '추가':
-                                    for col in range(1, len(df.columns) + 1):
-                                        cell = worksheet.cell(row=data_start_row + idx, column=col)
-                                        cell.fill = yellow_fill
-
-                        # 자동 열 너비 조정
-                        for column_cells in worksheet.columns:
-                            length = max(len(str(cell.value) if cell.value else "") for cell in column_cells)
-                            worksheet.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 50)
-
-                        current_row += len(df) + 5
-
-            logger.info(f"Successfully saved tables to {output_path}")
-
-        except Exception as e:
-            logger.error(f"Error saving to Excel: {str(e)}")
-
 def main():
     try:
         # 파일 경로 설정
         pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
         output_folder = "/workspaces/automation/output"
         os.makedirs(output_folder, exist_ok=True)
-        output_path = os.path.join(output_folder, "보험특약표.xlsx")
+        output_path = os.path.join(output_folder, "extracted_tables_camelot_all_pages.xlsx")
 
         if not os.path.exists(pdf_path):
             logger.error("PDF file not found")
@@ -423,26 +299,90 @@ def main():
         # 표 추출기 초기화
         logger.info("표 추출 시작...")
         table_extractor = TableExtractor()
-        sections_data = {}
+        all_processed_data = []
 
         # 각 섹션별 표 추출
         for section, (start_page, end_page) in document_analyzer.section_ranges.items():
             logger.info(f"Processing {section} (pages {start_page + 1} to {end_page})")
-            logger.info(f"하이라이트 및 표 분석 중... ({section})")
-            tables = table_extractor.extract_tables_from_section(pdf_path, start_page, end_page)
-            sections_data[section] = tables
+            for page_num in range(start_page, end_page):
+                logger.info(f"Processing page {page_num + 1}")
+                doc = fitz.open(pdf_path)
+                page = doc[page_num]
+
+                # 페이지를 이미지로 변환하고 하이라이트 감지
+                image = table_extractor.highlight_detector.pdf_to_image(page)
+                contours = table_extractor.highlight_detector.detect_highlights(image)
+                highlight_regions = table_extractor.highlight_detector.get_highlight_regions(contours, image.shape[0])
+
+                logger.info(f"Page {page_num + 1}: Detected {len(highlight_regions)} highlight regions")
+
+                # 표 추출
+                tables = table_extractor.extract_with_camelot(pdf_path, page_num + 1)
+
+                if not tables:
+                    logger.warning(f"No tables found on page {page_num + 1}")
+                    continue
+
+                for table_idx, table in enumerate(tables):
+                    # 테이블 처리 및 하이라이트 적용
+                    df = table_extractor.process_table_with_highlights(
+                        table, highlight_regions, image.shape[0], table_idx, page_num + 1
+                    )
+                    df = table_extractor.clean_table(df)
+                    if not df.empty:
+                        df['Page_Number'] = page_num + 1
+                        all_processed_data.append(df)
+
+                doc.close()
+
+        if not all_processed_data:
+            logger.error("No data processed.")
+            return
+
+        final_df = pd.concat(all_processed_data, ignore_index=True)
 
         # 결과 저장
-        if any(sections_data.values()):
-            logger.info("엑셀 파일 생성 중...")
-            ExcelWriter.save_to_excel(sections_data, output_path)
-            logger.info(f"처리 완료. 결과가 {output_path}에 저장되었습니다.")
-        else:
-            logger.error("추출된 표가 없습니다.")
+        logger.info("엑셀 파일 생성 중...")
+        ExcelWriter.save_to_excel(final_df, output_path)
+        logger.info(f"처리 완료. 결과가 {output_path}에 저장되었습니다.")
 
     except Exception as e:
         logger.error(f"Processing error: {str(e)}")
         raise
+
+class ExcelWriter:
+    @staticmethod
+    def save_to_excel(final_df: pd.DataFrame, output_path: str):
+        """엑셀로 저장하고 하이라이트 적용"""
+        try:
+            if final_df.empty:
+                logger.error("No data to save.")
+                return
+
+            final_df.to_excel(output_path, index=False)
+
+            # 엑셀 파일 로드
+            wb = load_workbook(output_path)
+            ws = wb.active
+
+            yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+            if '변경사항' in final_df.columns:
+                change_col_index = final_df.columns.get_loc('변경사항') + 1
+            else:
+                raise ValueError("DataFrame에 '변경사항' 컬럼이 없습니다.")
+
+            for row in range(2, ws.max_row + 1):
+                cell_value = ws.cell(row=row, column=change_col_index).value
+                if cell_value == '추가':
+                    for col in range(1, ws.max_column + 1):
+                        ws.cell(row=row, column=col).fill = yellow_fill
+
+            wb.save(output_path)
+            logger.info(f"Successfully saved tables to {output_path} with highlighted rows")
+
+        except Exception as e:
+            logger.error(f"Error saving to Excel: {str(e)}")
 
 if __name__ == "__main__":
     try:
