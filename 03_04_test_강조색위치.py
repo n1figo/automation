@@ -144,6 +144,30 @@ class TableExtractor:
         ]
         self.max_distance = 50
 
+    def match_title_to_table(self, titles, table_position):
+        """표와 가장 적절한 제목 매칭"""
+        best_title = None
+        min_distance = float('inf')
+        
+        for title in titles:
+            if title["used"]:
+                continue
+                
+            # 제목과 표 사이의 거리 계산
+            distance = table_position["y_top"] - title["y_bottom"]
+            
+            # 제목이 표보다 위에 있고, 현재까지 찾은 것보다 더 가까운 경우
+            if 0 < distance < self.max_distance and distance < min_distance:
+                best_title = title
+                min_distance = distance
+        
+        # 매칭되는 제목을 찾은 경우
+        if best_title:
+            best_title["used"] = True  # 이 제목이 사용되었음을 표시
+            return best_title["text"], min_distance
+            
+        return None, None
+
     def get_titles_with_positions(self, page) -> List[Dict]:
         titles = []
         blocks = page.get_text("dict")["blocks"]
@@ -332,7 +356,6 @@ class ExcelWriter:
                                                 fill_type='solid')
                         
                         if '변경사항' in df.columns:
-                            change_col_index = df.columns.get_loc('변경사항') + 1
                             for idx, row in enumerate(df.itertuples(), start=1):
                                 if getattr(row, '변경사항') == '추가':
                                     for col in range(1, len(df.columns) + 1):
@@ -350,7 +373,7 @@ def main():
     try:
         # 파일 경로 설정
         pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-        output_path = "/workspaces/output/보험특약표.xlsx"
+        output_path = "보험특약표.xlsx"
         
         if not os.path.exists(pdf_path):
             logger.error("PDF file not found")
