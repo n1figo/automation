@@ -1,3 +1,4 @@
+import sys  # Added missing import
 import PyPDF2
 import re
 import logging
@@ -75,21 +76,22 @@ class HighlightDetector:
 class TitleMatcher:
     def __init__(self):
         try:
-            # 실행 파일 경로 또는 현재 스크립트 경로 기준으로 모델 경로 설정
-            if getattr(sys, 'frozen', False):
-                # PyInstaller로 생성된 실행 파일인 경우
-                application_path = os.path.dirname(sys.executable)
-            else:
-                # 일반 Python 스크립트인 경우
-                application_path = os.path.dirname(os.path.abspath(__file__))
-                
-            model_path = os.path.join(application_path, "models", "distiluse-base-multilingual-cased-v1")
-            logger.info(f"모델 경로: {model_path}")
+            # 현재 스크립트의 위치를 기준으로 models 폴더 경로 설정
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)  # pdf_local 폴더
+            model_path = os.path.join(parent_dir, "models", "distiluse-base-multilingual-cased-v1")
             
+            # 모델 경로 존재 확인
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"모델 경로를 찾을 수 없습니다: {model_path}")
+                
+            logger.info(f"모델 경로: {model_path}")
             self.model = SentenceTransformer(model_path)
-            logger.info("로컬 모델 로드 성공")
+            logger.info("모델 로드 성공")
+            
         except Exception as e:
             logger.error(f"모델 로드 실패: {str(e)}")
+            messagebox.showerror("오류", f"모델 로드에 실패했습니다.\n{str(e)}")
             raise
 
     def get_embedding(self, text: str) -> np.ndarray:
@@ -99,7 +101,6 @@ class TitleMatcher:
         emb1 = self.get_embedding(text1)
         emb2 = self.get_embedding(text2)
         return 1 - cosine(emb1, emb2)
-    
 
 class InsuranceDocumentAnalyzer:
     def __init__(self):
@@ -173,93 +174,7 @@ class TableExtractor:
         ]
         self.max_distance = 50
 
-    def get_titles_with_positions(self, page) -> List[Dict]:
-        """페이지에서 제목과 위치 정보 추출"""
-        titles = []
-        blocks = page.get_text("dict")["blocks"]
-
-        for block in blocks:
-            if block.get("lines"):
-                text = ""
-                y_top = block["bbox"][1]
-                y_bottom = block["bbox"][3]
-
-                for line in block["lines"]:
-                    for span in line["spans"]:
-                        text += span["text"] + " "
-
-                text = text.strip()
-                if text and any(re.search(pattern, text) for pattern in self.title_patterns):
-                    titles.append({
-                        "text": text,
-                        "y_top": y_top,
-                        "y_bottom": y_bottom,
-                        "bbox": block["bbox"],
-                        "used": False
-                    })
-
-        return sorted(titles, key=lambda x: x["y_top"])
-
-    def get_table_positions(self, table, page_height):
-        """Camelot 표의 위치를 PyMuPDF 좌표계로 변환"""
-        x0, y0, x1, y1 = table._bbox
-        converted_y0 = page_height - y1  # 상단
-        converted_y1 = page_height - y0  # 하단
-
-        return {
-            "y_top": converted_y0,
-            "y_bottom": converted_y1,
-            "bbox": (x0, converted_y0, x1, converted_y1)
-        }
-
-    def match_title_to_table(self, titles, table_position):
-        """표와 가장 적절한 제목 매칭"""
-        best_title = None
-        min_distance = float('inf')
-
-        for title in titles:
-            if title["used"]:
-                continue
-
-            distance = table_position["y_top"] - title["y_bottom"]
-            if 0 < distance < self.max_distance and distance < min_distance:
-                best_title = title
-                min_distance = distance
-
-        if best_title:
-            best_title["used"] = True
-            return best_title["text"], min_distance
-        return None, None
-
-    def process_table_with_highlights(self, table, highlight_regions: List[Tuple[float, float]], page_height: int, table_index: int, page_num: int) -> pd.DataFrame:
-        """테이블 처리 및 하이라이트 감지"""
-        df = table.df.copy()
-        x1, y1, x2, y2 = table._bbox
-
-        table_height = y2 - y1
-        num_rows = len(df)
-        if num_rows == 0:
-            return df
-
-        row_height = table_height / num_rows
-        processed_data = []
-
-        for row_index in range(num_rows):
-            row_data = df.iloc[row_index].copy()
-
-            row_top = y2 - (row_index + 1) * row_height
-            row_bottom = y2 - row_index * row_height
-
-            row_highlighted = self.highlight_detector.check_highlight((row_top, row_bottom), highlight_regions)
-            row_data['변경사항'] = '추가' if row_highlighted else ''
-            row_data['Table_Number'] = table_index + 1
-            row_data['페이지'] = page_num
-            processed_data.append(row_data)
-
-        return pd.DataFrame(processed_data)
-    
-
-def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
+    def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
         """Camelot을 사용한 표 추출"""
         try:
             tables = camelot.read_pdf(
@@ -336,6 +251,91 @@ def extract_with_camelot(self, pdf_path: str, page_num: int) -> List:
         except Exception as e:
             logger.error(f"Error extracting tables from section: {e}")
             return []
+
+    def process_table_with_highlights(self, table, highlight_regions: List[Tuple[float, float]], page_height: int, table_index: int, page_num: int) -> pd.DataFrame:
+        """테이블 처리 및 하이라이트 감지"""
+        df = table.df.copy()
+        x1, y1, x2, y2 = table._bbox
+
+        table_height = y2 - y1
+        num_rows = len(df)
+        if num_rows == 0:
+            return df
+
+        row_height = table_height / num_rows
+        processed_data = []
+
+        for row_index in range(num_rows):
+            row_data = df.iloc[row_index].copy()
+
+            row_top = y2 - (row_index + 1) * row_height
+            row_bottom = y2 - row_index * row_height
+
+            row_highlighted = self.highlight_detector.check_highlight((row_top, row_bottom), highlight_regions)
+            row_data['변경사항'] = '추가' if row_highlighted else ''
+            row_data['Table_Number'] = table_index + 1
+            row_data['페이지'] = page_num
+            processed_data.append(row_data)
+
+        return pd.DataFrame(processed_data)
+
+    def get_titles_with_positions(self, page) -> List[Dict]:
+        """페이지에서 제목과 위치 정보 추출"""
+        titles = []
+        blocks = page.get_text("dict")["blocks"]
+
+        for block in blocks:
+            if block.get("lines"):
+                text = ""
+                y_top = block["bbox"][1]
+                y_bottom = block["bbox"][3]
+
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        text += span["text"] + " "
+
+                text = text.strip()
+                if text and any(re.search(pattern, text) for pattern in self.title_patterns):
+                    titles.append({
+                        "text": text,
+                        "y_top": y_top,
+                        "y_bottom": y_bottom,
+                        "bbox": block["bbox"],
+                        "used": False
+                    })
+
+        return sorted(titles, key=lambda x: x["y_top"])
+
+    def get_table_positions(self, table, page_height):
+        """Camelot 표의 위치를 PyMuPDF 좌표계로 변환"""
+        x0, y0, x1, y1 = table._bbox
+        converted_y0 = page_height - y1  # 상단
+        converted_y1 = page_height - y0  # 하단
+
+        return {
+            "y_top": converted_y0,
+            "y_bottom": converted_y1,
+            "bbox": (x0, converted_y0, x1, converted_y1)
+        }
+
+    def match_title_to_table(self, titles, table_position):
+        """표와 가장 적절한 제목 매칭"""
+        best_title = None
+        min_distance = float('inf')
+
+        for title in titles:
+            if title["used"]:
+                continue
+
+            distance = table_position["y_top"] - title["y_bottom"]
+            if 0 < distance < self.max_distance and distance < min_distance:
+                best_title = title
+                min_distance = distance
+
+        if best_title:
+            best_title["used"] = True
+            return best_title["text"], min_distance
+        return None, None
 
 class ExcelWriter:
     @staticmethod
@@ -419,8 +419,6 @@ class ExcelWriter:
         except Exception as e:
             logger.error(f"Error saving to Excel: {str(e)}")
 
-
-
 class PDFAnalyzerGUI:
     def __init__(self):
         self.root = tk.Tk()
@@ -440,7 +438,7 @@ class PDFAnalyzerGUI:
         # 메인 프레임
         main_frame = ttk.Frame(self.root, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         # 제목
         title_label = ttk.Label(
             main_frame,
@@ -448,30 +446,30 @@ class PDFAnalyzerGUI:
             font=("Helvetica", 16, "bold")
         )
         title_label.pack(pady=10)
-        
+
         # 파일 선택 프레임
         file_frame = ttk.LabelFrame(main_frame, text="PDF 파일 선택", padding="10")
         file_frame.pack(fill=tk.X, pady=10)
-        
+
         self.file_path_var = tk.StringVar()
         self.file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, width=60)
         self.file_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        
+
         browse_button = ttk.Button(
             file_frame,
             text="찾아보기",
             command=self.browse_file
         )
         browse_button.pack(side=tk.LEFT, padx=5)
-        
+
         # 진행 상태 표시
         self.progress_var = tk.StringVar(value="대기 중...")
         progress_label = ttk.Label(main_frame, textvariable=self.progress_var)
         progress_label.pack(pady=5)
-        
+
         self.progress_bar = ttk.Progressbar(main_frame, mode='determinate', length=300)
         self.progress_bar.pack(pady=5)
-        
+
         # 처리 시작 버튼
         self.process_button = ttk.Button(
             main_frame,
@@ -480,15 +478,15 @@ class PDFAnalyzerGUI:
             state=tk.DISABLED
         )
         self.process_button.pack(pady=10)
-        
+
         # 로그 영역
         log_frame = ttk.LabelFrame(main_frame, text="처리 로그", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        
+
         self.log_text = tk.Text(log_frame, height=15)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
-        
+
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -497,7 +495,7 @@ class PDFAnalyzerGUI:
         log_message = f"[{timestamp}] {level}: {message}\n"
         self.log_text.insert(tk.END, log_message)
         self.log_text.see(tk.END)
-        
+
         # 로거에도 기록
         if level == "INFO":
             logger.info(message)
@@ -522,58 +520,58 @@ class PDFAnalyzerGUI:
             output_folder = os.path.join(os.path.dirname(pdf_path), "output")
             os.makedirs(output_folder, exist_ok=True)
             output_path = os.path.join(output_folder, f"보험특약표_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-            
+
             # 처리 시작
             self.log_message("문서 분석 시작...")
             self.progress_bar['value'] = 10
-            
+
             document_analyzer = InsuranceDocumentAnalyzer()
             document_analyzer.find_section_pages(pdf_path)
-            
+
             if not document_analyzer.section_ranges:
                 self.log_message("섹션을 찾지 못했습니다. 문서 전체를 대상으로 진행합니다.", "WARNING")
                 doc = fitz.open(pdf_path)
                 total_pages = len(doc)
                 document_analyzer.section_ranges["전체"] = (0, total_pages)
                 doc.close()
-            
+
             self.log_message("표 추출 시작...")
             self.progress_bar['value'] = 30
-            
+
             table_extractor = TableExtractor()
             sections_data = {}
-            
+
             total_sections = len(document_analyzer.section_ranges)
             for idx, (section, (start_page, end_page)) in enumerate(document_analyzer.section_ranges.items(), 1):
                 if section not in ["[1종]", "[2종]", "[3종]"]:
                     continue
-                    
+
                 progress = 30 + (idx / total_sections) * 50
                 self.progress_bar['value'] = progress
                 self.progress_var.set(f"{section} 처리 중...")
-                
+
                 self.log_message(f"처리 중: {section} (페이지 {start_page + 1} ~ {end_page})")
                 tables = table_extractor.extract_tables_from_section(pdf_path, start_page, end_page)
                 sections_data[section] = tables
-                
+
             if any(sections_data.values()):
                 self.progress_bar['value'] = 90
                 self.progress_var.set("결과 저장 중...")
                 ExcelWriter.save_to_excel(sections_data, output_path)
                 self.progress_bar['value'] = 100
-                
+
                 success_message = f"처리가 완료되었습니다.\n저장 위치: {output_path}"
                 self.log_message(success_message)
                 messagebox.showinfo("완료", success_message)
             else:
                 self.log_message("추출된 표가 없습니다.", "WARNING")
                 messagebox.showwarning("경고", "추출된 표가 없습니다.")
-                
+
         except Exception as e:
             error_message = f"처리 중 오류가 발생했습니다: {str(e)}"
             self.log_message(error_message, "ERROR")
             messagebox.showerror("오류", error_message)
-            
+
         finally:
             self.progress_var.set("대기 중...")
             self.process_button['state'] = tk.NORMAL
@@ -584,10 +582,10 @@ class PDFAnalyzerGUI:
         if not pdf_path:
             messagebox.showerror("오류", "PDF 파일을 선택해주세요.")
             return
-            
+
         self.process_button['state'] = tk.DISABLED
         self.progress_bar['value'] = 0
-        
+
         # 별도 스레드에서 처리
         thread = threading.Thread(target=self.process_pdf_thread, args=(pdf_path,))
         thread.daemon = True
