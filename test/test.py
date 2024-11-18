@@ -1,60 +1,52 @@
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.llms import LlamaCpp
-from langchain.prompts import PromptTemplate
+import PyPDF2
+import re
+import logging
 
-def find_special_terms_pages(pdf_path):
-    # PDF 로더 초기화
-    loader = PyPDFLoader(pdf_path)
-    pages = loader.load_and_split()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def find_section_pages(pdf_path: str) -> list:
+    """
+    PDF에서 '상해관련 특약' 섹션이 시작하는 페이지들을 찾습니다.
+    """
+    section_pages = []
     
-    special_terms_pages = {
-        "상해관련 특별약관": [],
-        "질병관련 특별약관": []
-    }
-
-    # 각 페이지 분석
-    for i, page in enumerate(pages):
-        text = page.page_content
+    try:
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            total_pages = len(reader.pages)
+            logger.info(f"PDF 총 페이지 수: {total_pages}")
+            
+            # 각 페이지 검사
+            for page_num in range(total_pages):
+                text = reader.pages[page_num].extract_text()
+                
+                # 상해관련 특약 섹션 찾기
+                if "◇상해관련 특약" in text:
+                    section_pages.append(page_num + 1)
+                    logger.info(f"'상해관련 특약' 섹션 발견: 페이지 {page_num + 1}")
+                    
+                    # 섹션 내용 미리보기
+                    preview = text[:200].replace('\n', ' ')
+                    logger.info(f"섹션 미리보기: {preview}...")
         
-        # 키워드 검색
-        if "상해관련 특별약관" in text:
-            special_terms_pages["상해관련 특별약관"].append(i + 1)
-        if "질병관련 특별약관" in text:
-            special_terms_pages["질병관련 특별약관"].append(i + 1)
+        return section_pages
+        
+    except Exception as e:
+        logger.error(f"PDF 처리 중 오류 발생: {str(e)}")
+        return []
 
-    return special_terms_pages
+def main():
+    pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
+    
+    section_pages = find_section_pages(pdf_path)
+    
+    if section_pages:
+        print("\n=== 상해관련 특약 섹션 위치 ===")
+        for page in section_pages:
+            print(f"페이지 {page}")
+    else:
+        print("\n상해관련 특약 섹션을 찾을 수 없습니다.")
 
 if __name__ == "__main__":
-    # 필요한 패키지 설치
-    # pip install langchain-community
-    
-    pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-    results = find_special_terms_pages(pdf_path)
-    
-    # 결과 출력
-    for term, pages in results.items():
-        if pages:
-            print(f"{term}: {pages} 페이지에서 발견됨")
-        else:
-            print(f"{term}: 발견되지 않음")
-            # 69페이지 텍스트 추출
-            page_69 = loader.load_and_split()[68]  # 0-based index
-            with open("page_69.txt", "w", encoding="utf-8") as f:
-                f.write(page_69.page_content)
-
-            # Llama 모델로 상해관련 특별약관 검색
-
-            llm = LlamaCpp(
-                model_path="/path/to/llama/model.gguf",
-                temperature=0.1,
-                max_tokens=2000
-            )
-
-            prompt = PromptTemplate(
-                input_variables=["content"],
-                template="다음 보험약관 내용에서 상해관련 특별약관을 찾아서 설명해주세요:\n\n{content}"
-            )
-
-            response = llm(prompt.format(content=page_69.page_content))
-            print("\nLLM 분석 결과:")
-            print(response)
+    main()
