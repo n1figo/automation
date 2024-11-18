@@ -1,128 +1,156 @@
 import PyPDF2
 import re
 import logging
-from typing import Dict, List
+from typing import Dict, List, Tuple, NamedTuple
 from dataclasses import dataclass
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+class SectionMatch(NamedTuple):
+    page: int
+    title: str
+    position: int
+    text_before: str
+    text_after: str
+    type_number: str = None  # [1종], [2종] 등을 저장
 
 @dataclass
 class Section:
-    title: str
+    category: str
     start_page: int
-    end_page: int = None
+    end_page: int
+    start_position: int = 0
+    end_position: int = -1
+    type_number: str = None
 
-class PDFSectionFinder:
+class PDFSectionAnalyzer:
     def __init__(self):
+        self.type_pattern = r'\[(\d)종\]'
         self.section_patterns = {
-            '상해': [
-                r'[◇◆■□▶]([\s]*)(상해|상해관련|상해 관련)([\s]*)(특약|특별약관)',
-                r'상해([\s]*)(관련)?([\s]*)(특약|특별약관)',
-                r'상해([\s]*)보장([\s]*)(특약|특별약관)',
-            ],
-            '질병': [
-                r'[◇◆■□▶]([\s]*)(질병|질병관련|질병 관련)([\s]*)(특약|특별약관)',
-                r'질병([\s]*)(관련)?([\s]*)(특약|특별약관)',
-                r'질병([\s]*)보장([\s]*)(특약|특별약관)',
-            ],
-            '상해및질병': [
-                r'[◇◆■□▶]([\s]*)(상해\s*및\s*질병|상해와\s*질병)([\s]*)(관련)?([\s]*)(특약|특별약관)',
-                r'(상해\s*및\s*질병|상해와\s*질병)([\s]*)(관련)?([\s]*)(특약|특별약관)',
-            ]
+            '상해': r'[◇◆■□▶]([\s]*)(상해|상해관련|상해 관련)([\s]*)(특약|특별약관)',
+            '질병': r'[◇◆■□▶]([\s]*)(질병|질병관련|질병 관련)([\s]*)(특약|특별약관)',
+            '상해및질병': r'[◇◆■□▶]([\s]*)(상해\s*및\s*질병|상해와\s*질병)([\s]*)(관련)?([\s]*)(특약|특별약관)'
         }
+        self.context_size = 200
 
-    def find_all_section_starts(self, text: str, page_num: int) -> Dict[str, List[tuple]]:
-        """페이지에서 모든 섹션 시작점을 찾습니다"""
-        found_sections = {}
-        
-        for category, patterns in self.section_patterns.items():
-            for pattern in patterns:
-                matches = re.finditer(pattern, text, re.IGNORECASE)
-                for match in matches:
-                    if category not in found_sections:
-                        found_sections[category] = []
-                    found_sections[category].append((page_num, match.group()))
-        
-        return found_sections
+    def find_types(self, text: str) -> List[str]:
+        """페이지 내 종 구분([1종], [2종] 등)을 찾습니다"""
+        return [f"[{match.group(1)}종]" for match in re.finditer(self.type_pattern, text)]
 
-    def find_section_boundaries(self, pdf_path: str) -> Dict[str, List[Section]]:
-        """PDF에서 각 섹션의 범위를 찾습니다"""
-        sections = {
-            '상해': [],
-            '질병': [],
-            '상해및질병': []
-        }
+    def find_section_matches(self, pdf_path: str) -> List[SectionMatch]:
+        """페이지 내 위치 정보와 종 구분을 포함하여 섹션을 찾습니다"""
+        matches = []
         
-        try:
-            with open(pdf_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                total_pages = len(reader.pages)
-                logger.info(f"PDF 총 페이지 수: {total_pages}")
-
-                # 모든 섹션 시작점 찾기
-                section_starts = []
-                for page_num in range(total_pages):
-                    text = reader.pages[page_num].extract_text()
-                    found = self.find_all_section_starts(text, page_num)
-                    
-                    for category, matches in found.items():
-                        for page, title in matches:
-                            section_starts.append((page + 1, category, title))
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            for page_num in range(len(reader.pages)):
+                text = reader.pages[page_num].extract_text()
+                types_in_page = self.find_types(text)
+                current_type = types_in_page[0] if types_in_page else None
                 
-                # 시작점 시간순 정렬
-                section_starts.sort(key=lambda x: x[0])
-                
-                # 각 섹션의 범위 결정
-                for i, (start_page, category, title) in enumerate(section_starts):
-                    # 다음 섹션의 시작점 찾기
-                    end_page = total_pages
-                    if i < len(section_starts) - 1:
-                        next_category = section_starts[i + 1][1]
-                        if ((category == '상해' and next_category == '질병') or
-                            (category == '질병' and (next_category == '상해및질병' or next_category != '질병'))):
-                            end_page = section_starts[i + 1][0] - 1
-                    
-                    # 불필요한 중복 제거
-                    if not any(s.start_page == start_page for s in sections[category]):
-                        section = Section(title=title, start_page=start_page, end_page=end_page)
-                        sections[category].append(section)
-                        logger.info(f"{category} 섹션 찾음: {start_page}~{end_page} ({title})")
+                for category, pattern in self.section_patterns.items():
+                    for match in re.finditer(pattern, text):
+                        start_pos = max(0, match.start() - self.context_size)
+                        end_pos = min(len(text), match.end() + self.context_size)
+                        
+                        matches.append(SectionMatch(
+                            page=page_num + 1,
+                            title=match.group(),
+                            position=match.start(),
+                            text_before=text[start_pos:match.start()].strip(),
+                            text_after=text[match.end():end_pos].strip(),
+                            type_number=current_type
+                        ))
+        
+        return sorted(matches, key=lambda x: (x.page, x.position))
+
+    def determine_section_boundaries(self, matches: List[SectionMatch]) -> List[Section]:
+        """섹션의 경계를 결정합니다"""
+        sections = []
+        current_section = None
+        
+        for i, match in enumerate(matches):
+            category = self._determine_category(match.title)
             
-            return sections
-            
-        except Exception as e:
-            logger.error(f"PDF 처리 중 오류 발생: {str(e)}")
-            return sections
-
-    def analyze_sections(self, sections: Dict[str, List[Section]]) -> None:
-        """섹션 분석 결과를 출력합니다"""
-        print("\n=== 섹션 분석 결과 ===")
+            if current_section is None:
+                current_section = Section(
+                    category=category,
+                    start_page=match.page,
+                    end_page=match.page,
+                    start_position=match.position,
+                    type_number=match.type_number
+                )
+            else:
+                # 종이 변경되거나 다른 섹션이 시작되는 경우
+                if (match.type_number != current_section.type_number or 
+                    (current_section.category == '상해' and category == '질병')):
+                    
+                    if match.page == current_section.start_page:
+                        current_section.end_position = match.position - 1
+                    else:
+                        current_section.end_page = match.page - 1
+                        current_section.end_position = -1
+                    
+                    sections.append(current_section)
+                    current_section = Section(
+                        category=category,
+                        start_page=match.page,
+                        end_page=match.page,
+                        start_position=match.position,
+                        type_number=match.type_number
+                    )
+                else:
+                    # 같은 종 내에서 페이지가 변경되는 경우
+                    current_section.end_page = match.page
+                    current_section.end_position = match.position - 1
         
-        for category, section_list in sections.items():
-            if section_list:
-                print(f"\n{category} 섹션:")
-                for section in section_list:
-                    print(f"페이지: {section.start_page} ~ {section.end_page}")
-                    print(f"길이: {section.end_page - section.start_page + 1} 페이지")
-                
-                # 섹션 간 간격 분석
-                if len(section_list) > 1:
-                    print(f"\n{category} 섹션 간격:")
-                    for i in range(1, len(section_list)):
-                        gap = section_list[i].start_page - section_list[i-1].end_page - 1
-                        if gap > 0:
-                            print(f"섹션 {i} → {i+1} 사이 간격: {gap} 페이지")
+        # 마지막 섹션 처리
+        if current_section:
+            sections.append(current_section)
+        
+        return sections
+
+    def _determine_category(self, title: str) -> str:
+        """제목에서 카테고리를 결정합니다"""
+        if '상해및질병' in title or '상해 및 질병' in title:
+            return '상해및질병'
+        elif '상해' in title:
+            return '상해'
+        elif '질병' in title:
+            return '질병'
+        return 'unknown'
+
+    def analyze_pdf(self, pdf_path: str) -> None:
+        """PDF 분석을 실행하고 결과를 출력합니다"""
+        matches = self.find_section_matches(pdf_path)
+        sections = self.determine_section_boundaries(matches)
+        
+        # 종별 그룹화
+        type_sections: Dict[str, List[Section]] = {}
+        for section in sections:
+            type_num = section.type_number if section.type_number else "종구분없음"
+            if type_num not in type_sections:
+                type_sections[type_num] = []
+            type_sections[type_num].append(section)
+
+        # 결과 출력
+        print("\n=== PDF 섹션 분석 결과 ===")
+        for type_num, type_sections_list in type_sections.items():
+            print(f"\n■ {type_num}")
+            for section in type_sections_list:
+                print(f"\n{section.category} 섹션:")
+                if section.start_page == section.end_page:
+                    print(f"페이지 {section.start_page} (위치: {section.start_position} ~ {section.end_position})")
+                else:
+                    print(f"시작: 페이지 {section.start_page} (위치: {section.start_position})")
+                    print(f"끝: 페이지 {section.end_page}" + 
+                          (f" (위치: {section.end_position})" if section.end_position >= 0 else ""))
 
 def main():
     pdf_path = "/workspaces/automation/uploads/KB 9회주는 암보험Plus(무배당)(24.05)_요약서_10.1판매_v1.0_앞단.pdf"
-    
-    finder = PDFSectionFinder()
-    sections = finder.find_section_boundaries(pdf_path)
-    finder.analyze_sections(sections)
+    analyzer = PDFSectionAnalyzer()
+    analyzer.analyze_pdf(pdf_path)
 
 if __name__ == "__main__":
     main()
