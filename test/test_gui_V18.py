@@ -33,6 +33,7 @@ class PDFDocument:
     def __init__(self, pdf_path: str):
         self.pdf_path = pdf_path
         self.doc = fitz.open(pdf_path)
+        # 섹션 패턴 정의 - 더 정확한 패턴으로 수정
         self.section_patterns = {
             "상해": r"(?:◆|◇|■|□|▶)?\s*상해.*(?:특약|특별약관)",
             "질병": r"(?:◆|◇|■|□|▶)?\s*질병.*(?:특약|특별약관)",
@@ -47,8 +48,6 @@ class PDFDocument:
     def find_section_ranges(self) -> Dict[str, Dict[str, int]]:
         """PDF에서 섹션별 페이지 범위 찾기"""
         try:
-            print("\n=== PDF 섹션 분석 결과 ===")
-            
             # 섹션 시작 페이지 찾기
             for page_num in range(len(self.doc)):
                 text = self.doc[page_num].get_text()
@@ -56,57 +55,35 @@ class PDFDocument:
                     if not self.sections[section]["start"] and re.search(pattern, text):
                         self.sections[section]["start"] = page_num
                         logger.info(f"{section} 섹션 시작: {page_num + 1}페이지")
-                        print(f"[{section}]")
-                        print(f"시작 페이지: {page_num + 1}")
 
             # 섹션 끝 페이지 설정
-            # 1. 상해섹션 끝 = 질병섹션 시작
             if self.sections["상해"]["start"] is not None and self.sections["질병"]["start"] is not None:
-                self.sections["상해"]["end"] = self.sections["질병"]["start"]
-            
-            # 2. 질병섹션 끝 = 상해및질병섹션 시작
+                self.sections["상해"]["end"] = self.sections["질병"]["start"] - 1
+
             if self.sections["질병"]["start"] is not None and self.sections["상해및질병"]["start"] is not None:
-                self.sections["질병"]["end"] = self.sections["상해및질병"]["start"]
-            
-            # 3. 상해및질병 섹션은 한 페이지만
+                self.sections["질병"]["end"] = self.sections["상해및질병"]["start"] - 1
+
             if self.sections["상해및질병"]["start"] is not None:
                 self.sections["상해및질병"]["end"] = self.sections["상해및질병"]["start"]
 
-            # 상해섹션부터 상해및질병섹션까지 추출 범위 출력
+            # 유효성 검사 및 자동 조정
+            for section, info in self.sections.items():
+                if info["start"] is not None and info["end"] is not None:
+                    if info["start"] > info["end"]:
+                        logger.warning(f"{section} 섹션의 페이지 범위가 잘못되었습니다. 조정합니다.")
+                        info["end"] = info["start"]
+
+            # 실제 처리할 전체 범위 출력
             if self.sections["상해"]["start"] is not None and self.sections["상해및질병"]["start"] is not None:
-                print("\n상해섹션부터 상해및질병섹션까지 추출을 시작합니다.")
-                print("=" * 50)
                 start_page = self.sections["상해"]["start"] + 1
                 end_page = self.sections["상해및질병"]["start"] + 1
-                print(f"{start_page}페이지부터 {end_page}페이지까지 추출을 시작합니다.")
-                print("=" * 50 + "\n")
-
-            # 섹션 범위 요약 출력
-            print("\n=== 섹션 범위 요약 ===")
-            for section, info in self.sections.items():
-                if info["start"] is not None:
-                    start = info["start"] + 1
-                    if info["end"] is not None:
-                        end = info["end"] + 1
-                        print(f"{section}: {start}~{end}페이지")
-                        logger.info(f"{section} 섹션 범위: {start} ~ {end} 페이지")
-                    else:
-                        print(f"{section}: {start}페이지부터 시작")
-                        logger.info(f"{section} 섹션 범위: {start} ~ 마지막 페이지")
-
-            # 테이블 추출 시작
-            self.extract_tables()
+                logger.info(f"{start_page}페이지부터 {end_page}페이지까지 처리를 시작합니다.")
             
             return self.sections
 
         except Exception as e:
-            logger.error(f"페이지 범위 찾기 실패: {str(e)}")
+            logger.error(f"섹션 범위 찾기 실패: {str(e)}")
             return self.sections
-
-    def close(self):
-        """문서 닫기"""
-        if self.doc:
-            self.doc.close()
 
     def get_page_count(self) -> int:
         """전체 페이지 수 반환"""
@@ -140,6 +117,11 @@ class PDFDocument:
             section for section in self.sections.keys() 
             if self.is_valid_section(section)
         ]
+
+    def close(self):
+        """문서 닫기"""
+        if self.doc:
+            self.doc.close()
 
 class HighlightDetector:
     def __init__(self):
@@ -460,11 +442,18 @@ class TableExtractor:
     def __init__(self):
         self.table_processor = TableProcessor()
         self.highlight_detector = HighlightDetector()
+        self.section_mapping = {
+            "상해": "injury",
+            "질병": "disease",
+            "상해및질병": "both"
+        }
+        # 표 추출 설정
         self.extraction_settings = {
             'lattice': {
                 'line_scale': 40,
                 'process_background': True,
-                'copy_text': ['v']
+                'copy_text': ['v'],
+                'line_margin': 2
             },
             'stream': {
                 'edge_tol': 500,
@@ -472,65 +461,6 @@ class TableExtractor:
                 'split_text': True
             }
         }
-        self.section_mapping = {
-            "상해": "injury",
-            "질병": "disease",
-            "상해및질병": "both"
-        }
-
-    def process_table(self, table, page_image: np.ndarray, page_num: int) -> pd.DataFrame:
-        """테이블 처리"""
-        try:
-            logger.info(f"테이블 처리 시작 (페이지 {page_num + 1})")
-            df = table.df.copy()
-            
-            # 기본 정제
-            df = self.table_processor.standardize_columns(df, page_num + 1)
-            if df.empty:
-                logger.warning(f"표준화 후 빈 데이터프레임")
-                return df
-                
-            df = self.table_processor.clean_table_content(df)
-            if df.empty:
-                logger.warning(f"정제 후 빈 데이터프레임")
-                return df
-            
-            # 데이터 검증
-            if df['담보명'].isna().all() or df['담보명'].str.strip().eq('').all():
-                logger.warning("담보명 데이터 없음")
-                return pd.DataFrame()
-                
-            # 하이라이트 감지
-            contours = self.highlight_detector.detect_highlights(page_image)
-            if contours:
-                logger.info(f"페이지 {page_num + 1}에서 하이라이트 영역 감지됨")
-                highlight_regions = self.highlight_detector.get_highlight_regions(
-                    contours, page_image.shape[0]
-                )
-                
-                # 변경사항 표시
-                if highlight_regions:
-                    bbox = table._bbox
-                    if bbox:
-                        x1, y1, x2, y2 = bbox
-                        row_height = (y2 - y1) / len(df)
-                        
-                        for idx in range(len(df)):
-                            row_top = y2 - (idx + 1) * row_height
-                            row_bottom = y2 - idx * row_height
-                            
-                            if self.highlight_detector.check_highlight(
-                                (row_top, row_bottom), highlight_regions
-                            ):
-                                df.loc[idx, '변경사항'] = '추가'
-                                logger.info(f"페이지 {page_num + 1}의 {idx+1}번째 행에서 변경사항 감지")
-            
-            logger.info(f"페이지 {page_num + 1}의 테이블 처리 완료 ({len(df)} 행)")
-            return df
-                
-        except Exception as e:
-            logger.error(f"테이블 처리 실패 (페이지 {page_num + 1}): {str(e)}")
-            return pd.DataFrame()
 
     def extract_tables(self, pdf_path: str, page_num: int) -> List[pd.DataFrame]:
         """페이지에서 테이블 추출"""
@@ -543,80 +473,222 @@ class TableExtractor:
                 **self.extraction_settings['lattice']
             )
             
-            # Lattice 방식 실패 시 Stream 방식 시도
-            if len(tables) == 0:
-                tables = camelot.read_pdf(
-                    pdf_path,
-                    pages=str(page_num + 1),
-                    flavor='stream',
-                    **self.extraction_settings['stream']
-                )
+            # 테이블 검증
+            valid_tables = [table for table in tables if self._validate_table(table)]
             
-            # 정확도가 80% 이상인 테이블만 반환
-            valid_tables = [table for table in tables if table.parsing_report['accuracy'] > 80]
-            logger.info(f"페이지 {page_num + 1}에서 {len(valid_tables)}개의 유효한 테이블 추출")
+            if valid_tables:
+                logger.info(f"Lattice 모드로 {len(valid_tables)}개 테이블 추출 성공")
+                return valid_tables
+            
+            # Lattice 실패 시 Stream 방식 시도
+            tables = camelot.read_pdf(
+                pdf_path,
+                pages=str(page_num + 1),
+                flavor='stream',
+                **self.extraction_settings['stream']
+            )
+            
+            valid_tables = [table for table in tables if self._validate_table(table)]
+            logger.info(f"Stream 모드로 {len(valid_tables)}개 테이블 추출")
             return valid_tables
             
         except Exception as e:
             logger.error(f"페이지 {page_num + 1} 테이블 추출 실패: {str(e)}")
             return []
 
+    def _validate_table(self, table) -> bool:
+        """테이블 유효성 검사"""
+        try:
+            # 정확도 검사
+            if table.parsing_report['accuracy'] < 80:
+                return False
+                
+            # 데이터 존재 여부
+            if table.df.empty:
+                return False
+                
+            # 최소 행/열 수 확인
+            if len(table.df) < 2 or len(table.df.columns) < 2:
+                return False
+                
+            # 공백 비율 검사
+            empty_cells = table.df.isna().sum().sum()
+            total_cells = table.df.size
+            if empty_cells / total_cells > 0.5:
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"테이블 검증 실패: {str(e)}")
+            return False
+
+    def process_table(self, table, page_image: np.ndarray, page_num: int) -> pd.DataFrame:
+        """테이블 처리"""
+        try:
+            logger.info(f"테이블 처리 시작 (페이지 {page_num + 1})")
+            
+            # 입력 검증
+            if table is None:
+                logger.warning("테이블 객체가 None입니다")
+                return pd.DataFrame()
+                
+            # DataFrame 복사
+            df = table.df.copy()
+            
+            # 빈 DataFrame 체크
+            if df.empty:
+                logger.warning("빈 데이터프레임")
+                return pd.DataFrame()
+            
+            # 기본 정제
+            df = self.table_processor.standardize_columns(df, page_num + 1)
+            if df.empty:
+                logger.warning("표준화 후 빈 데이터프레임")
+                return pd.DataFrame()
+                
+            df = self.table_processor.clean_table_content(df)
+            if df.empty:
+                logger.warning("정제 후 빈 데이터프레임")
+                return pd.DataFrame()
+            
+            # 담보명 컬럼 체크
+            if '담보명' not in df.columns:
+                logger.warning("담보명 컬럼이 없음")
+                return pd.DataFrame()
+            
+            # 담보명 데이터 체크
+            if len(df) == 0 or df['담보명'].isna().all() or df['담보명'].str.strip().eq('').all():
+                logger.warning("담보명 데이터 없음")
+                return pd.DataFrame()
+                    
+            # 하이라이트 감지
+            if page_image is not None and len(page_image) > 0:
+                contours = self.highlight_detector.detect_highlights(page_image)
+                if len(contours) > 0:
+                    logger.info(f"페이지 {page_num + 1}에서 하이라이트 영역 감지됨")
+                    highlight_regions = self.highlight_detector.get_highlight_regions(
+                        contours, page_image.shape[0]
+                    )
+                    
+                    # 변경사항 표시
+                    if len(highlight_regions) > 0:
+                        try:
+                            bbox = table._bbox
+                            if bbox is not None:
+                                x1, y1, x2, y2 = bbox
+                                if len(df) > 0:  # df가 비어있지 않은 경우에만 처리
+                                    row_height = (y2 - y1) / len(df)
+                                    
+                                    for idx in range(len(df)):
+                                        row_top = y2 - (idx + 1) * row_height
+                                        row_bottom = y2 - idx * row_height
+                                        
+                                        if self.highlight_detector.check_highlight(
+                                            (row_top, row_bottom), highlight_regions
+                                        ):
+                                            if '변경사항' not in df.columns:
+                                                df['변경사항'] = ''
+                                            df.loc[idx, '변경사항'] = '추가'
+                                            logger.info(f"페이지 {page_num + 1}의 {idx+1}번째 행에서 변경사항 감지")
+                        except Exception as e:
+                            logger.error(f"하이라이트 처리 중 오류: {str(e)}")
+                            # 하이라이트 처리 실패해도 기본 데이터는 반환
+            
+            # 최종 검증
+            if not df.empty and len(df.columns) >= 2:
+                logger.info(f"페이지 {page_num + 1}의 테이블 처리 완료 ({len(df)} 행)")
+                return df
+            else:
+                logger.warning("최종 검증 실패: 유효하지 않은 데이터")
+                return pd.DataFrame()
+                    
+        except Exception as e:
+            logger.error(f"테이블 처리 실패 (페이지 {page_num + 1}): {str(e)}")
+            return pd.DataFrame()
+
     def extract_section_tables(self, pdf_doc: fitz.Document, start_page: int, 
                              end_page: int, section_type: str) -> Dict[str, pd.DataFrame]:
         """섹션의 모든 테이블 추출 및 처리"""
-        tables_data = []
-        
         try:
-            # 페이지 범위 유효성 검사
             if not isinstance(start_page, int) or not isinstance(end_page, int):
                 logger.error(f"페이지 번호가 정수가 아님: start_page={start_page}, end_page={end_page}")
                 return {self.section_mapping[section_type]: pd.DataFrame()}
 
             if start_page > end_page:
-                logger.error(f"시작 페이지가 끝 페이지보다 큼: {start_page} > {end_page}")
-                return {self.section_mapping[section_type]: pd.DataFrame()}
+                logger.warning(f"페이지 범위 조정: {start_page} -> {end_page}")
+                start_page = end_page
 
-            logger.info(f"{section_type} 섹션 테이블 추출 시작: {start_page + 1}페이지 ~ {end_page + 1}페이지")
-            
+            logger.info(f"{section_type} 섹션 처리: {start_page + 1}페이지 ~ {end_page + 1}페이지")
+            tables_data = []
+
             for page_num in range(start_page, end_page + 1):
-                logger.info(f"페이지 {page_num + 1} 처리 중...")
-                
                 # 페이지 이미지 변환
                 page = pdf_doc[page_num]
                 image = self.highlight_detector.pdf_to_image(page)
-                
                 if image is None:
-                    logger.warning(f"페이지 {page_num + 1} 이미지 변환 실패")
                     continue
-                
+
                 # 테이블 추출
                 tables = self.extract_tables(pdf_doc.name, page_num)
-                
+                if not tables:
+                    continue
+
                 # 테이블 처리
                 for table_idx, table in enumerate(tables):
                     try:
                         df = self.process_table(table, image, page_num)
                         if not df.empty:
                             tables_data.append(df)
-                            logger.info(f"페이지 {page_num + 1}에서 테이블 {table_idx + 1} 추출 성공")
+                            logger.info(f"페이지 {page_num + 1} 테이블 {table_idx + 1} 추출 성공")
                     except Exception as e:
-                        logger.error(f"페이지 {page_num + 1}의 테이블 {table_idx + 1} 처리 실패: {str(e)}")
-                        continue
-            
-            # 섹션별 테이블 병합
+                        logger.error(f"테이블 {table_idx + 1} 처리 실패 (페이지 {page_num + 1}): {str(e)}")
+
+            # 섹션의 모든 테이블 병합
             if tables_data:
-                merged_df = self.table_processor.merge_tables(tables_data, section_type)
-                logger.info(f"{section_type} 섹션 테이블 {len(tables_data)}개 병합 완료")
-                # 매핑된 섹션 타입으로 반환
-                mapped_section = self.section_mapping[section_type]
-                return {mapped_section: merged_df}
-            
-            logger.warning(f"{section_type} 섹션에서 추출된 테이블 없음")
+                merged_df = pd.concat(tables_data, ignore_index=True)
+                return {self.section_mapping[section_type]: merged_df}
+
             return {self.section_mapping[section_type]: pd.DataFrame()}
-            
+
         except Exception as e:
             logger.error(f"섹션 테이블 추출 실패: {str(e)}")
             return {self.section_mapping[section_type]: pd.DataFrame()}
+
+    def extract_tables_from_section(self, pdf_path: str, start_page: int, end_page: int) -> List[pd.DataFrame]:
+        """섹션 내 테이블 추출"""
+        tables_data = []
+        
+        try:
+            doc = fitz.open(pdf_path)
+            
+            for page_num in range(start_page, end_page + 1):
+                page = doc[page_num]
+                image = self.highlight_detector.pdf_to_image(page)
+                
+                # 테이블 추출 시도
+                tables = camelot.read_pdf(
+                    pdf_path,
+                    pages=str(page_num + 1),
+                    flavor='lattice',
+                    **self.extraction_settings['lattice']
+                )
+                
+                for table_idx, table in enumerate(tables):
+                    try:
+                        df = self.process_table(table, image, page_num)
+                        if not df.empty:
+                            tables_data.append(df)
+                            logger.info(f"페이지 {page_num + 1} 테이블 {table_idx + 1} 추출 성공")
+                    except Exception as e:
+                        logger.error(f"페이지 {page_num + 1}의 테이블 {table_idx + 1} 처리 실패: {str(e)}")
+            
+            doc.close()
+            return tables_data
+            
+        except Exception as e:
+            logger.error(f"섹션 테이블 추출 실패: {str(e)}")
+            return []
         
 
 class ExcelWriter:
@@ -706,33 +778,59 @@ class ExcelWriter:
         except Exception as e:
             logger.error(f"열 너비 조정 실패: {str(e)}")
 
-    def save_to_excel(self, tables: Dict[str, pd.DataFrame], output_path: str):
-        """엑셀 파일로 저장"""
+    def save_to_excel(self, tables_data: Dict[str, pd.DataFrame], output_path: str):
         try:
             wb = Workbook()
             ws = wb.active
             ws.title = "보장내용"
             current_row = 1
-            
-            # 섹션별 테이블 작성
-            for section_type, title in [
-                ('injury', '상해관련 특별약관'),
-                ('disease', '질병관련 특별약관')
-            ]:
-                if section_type in tables and not tables[section_type].empty:
-                    current_row = self.write_table(
-                        ws, tables[section_type], current_row, title
-                    )
-            
-            # 열 너비 조정
-            self.adjust_column_widths(ws)
-            
-            # 파일 저장
+
+            for section_type, tables in tables_data.items():
+                # 섹션 제목 추가
+                section_cell = ws.cell(row=current_row, column=1, value=section_type)
+                section_cell.font = Font(bold=True, size=14)
+                current_row += 2
+
+                # 테이블 데이터 작성
+                for table in tables:
+                    if not table.df.empty:
+                        df = table.df.copy()
+                        
+                        # 헤더 작성
+                        for col_idx, col_name in enumerate(df.columns, 1):
+                            cell = ws.cell(row=current_row, column=col_idx, value=col_name)
+                            cell.font = Font(bold=True)
+                            cell.fill = PatternFill(start_color='F2F2F2',
+                                                end_color='F2F2F2',
+                                                fill_type='solid')
+                        current_row += 1
+
+                        # 데이터 작성
+                        for idx, row in df.iterrows():
+                            for col_idx, value in enumerate(row, 1):
+                                cell = ws.cell(row=current_row, column=col_idx, value=value)
+                                cell.alignment = Alignment(wrap_text=True)
+                            current_row += 1
+                        
+                        current_row += 2
+
+                # 열 너비 자동 조정
+                for column in ws.columns:
+                    max_length = 0
+                    for cell in column:
+                        try:
+                            max_length = max(max_length, len(str(cell.value or "")))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    ws.column_dimensions[column[0].column_letter].width = adjusted_width
+
             wb.save(output_path)
             logger.info(f"Excel 파일 저장 완료: {output_path}")
-            
+
         except Exception as e:
-            logger.error(f"Excel 파일 저장 실패: {str(e)}")
+            logger.error(f"Excel 저장 실패: {str(e)}")
+            raise
 
 
 class ExcelWriter:
@@ -757,111 +855,77 @@ class ExcelWriter:
                     top=Side(style='thin'),
                     bottom=Side(style='thin')
                 )
-            },
-            'highlight': {
-                'fill': PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
             }
         }
 
-    def apply_cell_style(self, cell, style_name: str):
-        """스타일 적용"""
-        for attr, value in self.styles[style_name].items():
-            setattr(cell, attr, value)
-
-    def write_table(self, worksheet, df: pd.DataFrame, start_row: int, 
-                    title: str) -> int:
-        """테이블 작성"""
+    def save_to_excel(self, sections_data: Dict[str, List[Tuple[str, pd.DataFrame, int]]], output_path: str):
         try:
-            # 제목 작성
-            title_cell = worksheet.cell(row=start_row, column=1, value=title)
-            self.apply_cell_style(title_cell, 'header')
-            worksheet.merge_cells(
-                start_row=start_row,
-                start_column=1,
-                end_row=start_row,
-                end_column=len(df.columns)
-            )
-            
-            # 열 헤더 작성
-            for col_idx, column in enumerate(df.columns, 1):
-                cell = worksheet.cell(row=start_row + 2, column=col_idx, value=column)
-                self.apply_cell_style(cell, 'header')
-            
-            # 데이터 작성
-            for row_idx, row in enumerate(df.itertuples(index=False), start_row + 3):
-                for col_idx, value in enumerate(row, 1):
-                    cell = worksheet.cell(row=row_idx, column=col_idx, value=value)
-                    self.apply_cell_style(cell, 'cell')
-                    
-                    # 변경사항이 '추가'인 행 하이라이트
-                    if col_idx == df.columns.get_loc('변경사항') + 1 and value == '추가':
-                        for highlight_col in range(1, len(df.columns) + 1):
-                            self.apply_cell_style(
-                                worksheet.cell(row=row_idx, column=highlight_col),
-                                'highlight'
-                            )
-            
-            return start_row + len(df) + 4
-
-        except Exception as e:
-            logger.error(f"테이블 작성 실패: {str(e)}")
-            return start_row + 1
-
-    def adjust_column_widths(self, worksheet):
-        """열 너비 자동 조정"""
-        try:
-            for column in worksheet.columns:
-                max_length = 0
-                for cell in column:
-                    try:
-                        max_length = max(max_length, len(str(cell.value or "")))
-                    except:
-                        pass
-                worksheet.column_dimensions[get_column_letter(column[0].column)].width = \
-                    min(max_length + 2, 50)
-        except Exception as e:
-            logger.error(f"열 너비 조정 실패: {str(e)}")
-
-    def save_to_excel(self, tables: Dict[str, pd.DataFrame], output_path: str):
-        """엑셀 파일로 저장"""
-        try:
-            logger.info("Excel 파일 생성 시작")
             wb = Workbook()
             ws = wb.active
             ws.title = "보장내용"
             current_row = 1
 
-            # 섹션별 테이블 작성
-            section_titles = {
-                'injury': '상해관련 특별약관',
-                'disease': '질병관련 특별약관',
-                'both': '상해 및 질병관련 특별약관'
-            }
-            
-            for section_type, df in tables.items():
-                if not df.empty:
-                    logger.info(f"{section_type} 섹션 데이터 작성 중...")
-                    title = section_titles.get(section_type, section_type)
-                    current_row = self.write_table(ws, df, current_row, title)
-                    logger.info(f"{section_type} 섹션 데이터 작성 완료: {len(df)}행")
-                else:
-                    logger.warning(f"{section_type} 섹션 데이터 없음")
+            for section_type, tables in sections_data.items():
+                if not tables:
+                    continue
 
-            # 열 너비 조정
-            self.adjust_column_widths(ws)
-            
-            # 파일 저장
+                # 섹션 제목 작성
+                title = self._get_section_title(section_type)
+                header_cell = ws.cell(row=current_row, column=1, value=title)
+                self._apply_style(header_cell, 'header')
+                current_row += 2
+
+                # 테이블 데이터 작성
+                for title, df, page_num in tables:
+                    current_row = self._write_table(ws, df, current_row, title, page_num)
+                    current_row += 2
+
+                # 열 너비 자동 조정
+                self._adjust_column_widths(ws)
+
             wb.save(output_path)
             logger.info(f"Excel 파일 저장 완료: {output_path}")
-            
-            # 저장된 데이터 확인
-            logger.info(f"저장된 섹션: {list(tables.keys())}")
-            for section_type, df in tables.items():
-                logger.info(f"{section_type} 섹션: {len(df)}행")
-            
+
         except Exception as e:
-            logger.error(f"Excel 파일 저장 실패: {str(e)}")
+            logger.error(f"Excel 저장 실패: {str(e)}")
             raise
+
+    def _write_table(self, worksheet, df: pd.DataFrame, start_row: int, 
+                     title: str, page_num: int) -> int:
+        # 표 제목 작성
+        title_cell = worksheet.cell(
+            row=start_row, 
+            column=1, 
+            value=f"{title} (페이지: {page_num})"
+        )
+        self._apply_style(title_cell, 'header')
+        
+        # 헤더 행 작성
+        start_row += 1
+        for col_idx, col_name in enumerate(df.columns, 1):
+            cell = worksheet.cell(row=start_row, column=col_idx, value=col_name)
+            self._apply_style(cell, 'header')
+
+        # 데이터 작성
+        start_row += 1
+        for _, row in df.iterrows():
+            for col_idx, value in enumerate(row, 1):
+                cell = worksheet.cell(row=start_row, column=col_idx, value=value)
+                self._apply_style(cell, 'cell')
+            start_row += 1
+
+        return start_row
+
+    def _adjust_column_widths(self, worksheet):
+        for column in worksheet.columns:
+            max_length = 0
+            for cell in column:
+                try:
+                    max_length = max(max_length, len(str(cell.value or "")))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
 
 
 class PDFAnalyzerGUI:
