@@ -146,7 +146,7 @@ class TestPDFAnalyzer:
                 "groq_result": {}
             }
             
-            results = await validator.process_pdf('test.pdf')
+            results = await validator.process_pdf('/workspaces/automation/test/test_data/KB 금쪽같은 자녀보험Plus(무배당)(24.05)_11월11일판매_요약서_v1.1.pdf')
             
             assert len(results) == 1
             assert results[0]['validation_result']['is_valid']
