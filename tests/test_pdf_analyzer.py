@@ -5,8 +5,8 @@ from unittest.mock import patch
 import json
 import os
 from datetime import datetime
-from pdf_analyzer.validators.table_validator import PDFTableValidator
-from pdf_analyzer.parsers.improved_table_parser import ImprovedTableParser
+from pdf_analyzer.validators import PDFTableValidator
+from pdf_analyzer.parsers import ImprovedTableParser
 
 # pytest-asyncio 설정
 pytest_plugins = ('pytest_asyncio',)
