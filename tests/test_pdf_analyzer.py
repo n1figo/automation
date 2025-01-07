@@ -5,8 +5,10 @@ from unittest.mock import Mock, patch
 import json
 import os
 from pathlib import Path
-from improved_table_parser import ImprovedTableParser
-from table_validator import PDFTableValidator
+from pdf_analyzer.parsers.improved_table_parser import ImprovedTableParser
+from pdf_analyzer.validators.table_validator import PDFTableValidator
+# from improved_table_parser import ImprovedTableParser
+# from table_validator import PDFTableValidator
 
 class TestPDFAnalyzer:
     @pytest.fixture
