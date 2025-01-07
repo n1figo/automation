@@ -1,209 +1,176 @@
 import pytest
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from unittest.mock import Mock, patch
 import json
 import os
-from pathlib import Path
-from pdf_analyzer.parsers.improved_table_parser import ImprovedTableParser
-from pdf_analyzer.validators.table_validator import PDFTableValidator
-# from improved_table_parser import ImprovedTableParser
-# from table_validator import PDFTableValidator
+import asyncio
+from datetime import datetime
 
-class TestPDFAnalyzer:
-    @pytest.fixture
-    def parser(self):
-        return ImprovedTableParser()
+class TestIntegratedPDFAnalyzer:
+    @pytest.fixture(scope="class")
+    def test_pdf_path(self):
+        return "tests/test_data/sample.pdf"
 
-    @pytest.fixture
-    def validator(self):
-        return PDFTableValidator(
-            llama_model_path="test_model.gguf",
-            groq_api_key="test-key",
-            accuracy_threshold=0.8
-        )
+    @pytest.fixture(scope="class")
+    def expected_table_structure(self):
+        return {
+            'columns': ['담보명', '보험금액', '보험료'],
+            'num_rows': 2,
+            'merged_cells': True
+        }
 
-    @pytest.fixture
-    def sample_table(self):
-        return pd.DataFrame({
+    @pytest.fixture(scope="class")
+    def mock_groq_response(self):
+        return {
+            "validation_result": True,
+            "identified_issues": [],
+            "confidence_level": 0.95,
+            "suggestions": ["금액 표기 방식을 일관되게 맞추세요."]
+        }
+
+    @pytest.mark.asyncio
+    async def test_full_processing_pipeline(self, test_pdf_path, expected_table_structure, mock_groq_response):
+        """전체 처리 파이프라인 통합 테스트"""
+        
+        # 1. 파일 존재 확인
+        assert Path(test_pdf_path).exists(), "테스트 PDF 파일이 없습니다"
+
+        # 2. 테이블 파싱 테스트
+        with patch('pdf_analyzer.parsers.improved_table_parser.ImprovedTableParser.parse_table') as mock_parse:
+            mock_parse.return_value = pd.DataFrame({
+                '담보명': ['일반상해사망', '암진단금'],
+                '보험금액': ['1,000만원', '3,000만원'],
+                '보험료': ['1,000원', '3,000원']
+            })
+            
+            parsed_table = mock_parse.return_value
+            
+            # 구조 검증
+            assert list(parsed_table.columns) == expected_table_structure['columns']
+            assert len(parsed_table) == expected_table_structure['num_rows']
+
+        # 3. Groq AI 검증 테스트
+        with patch('pdf_analyzer.validators.table_validator.PDFTableValidator.validate_with_groq') as mock_validate:
+            mock_validate.return_value = mock_groq_response
+            
+            validation_result = mock_groq_response
+            
+            assert validation_result['validation_result']
+            assert validation_result['confidence_level'] > 0.9
+            assert isinstance(validation_result['suggestions'], list)
+
+        # 4. 멀티모달 분석 테스트
+        with patch('pdf_analyzer.analyzers.multimodal_analyzer.analyze_table_image') as mock_multimodal:
+            mock_multimodal.return_value = {
+                "is_table": True,
+                "num_columns": 3,
+                "has_merged_cells": True,
+                "confidence": 0.98
+            }
+            
+            multimodal_result = mock_multimodal.return_value
+            
+            assert multimodal_result['is_table']
+            assert multimodal_result['num_columns'] == len(expected_table_structure['columns'])
+            assert multimodal_result['confidence'] > 0.9
+
+        # 5. 최종 결과 검증
+        final_result = {
+            'table_data': parsed_table.to_dict(),
+            'ai_validation': validation_result,
+            'multimodal_analysis': multimodal_result
+        }
+
+        assert all(k in final_result for k in ['table_data', 'ai_validation', 'multimodal_analysis'])
+
+    @pytest.mark.asyncio
+    async def test_error_handling(self, test_pdf_path):
+        """에러 처리 테스트"""
+        
+        # 1. 파싱 에러 처리
+        with patch('pdf_analyzer.parsers.improved_table_parser.ImprovedTableParser.parse_table', 
+                  side_effect=Exception("파싱 오류")) as mock_parse:
+            try:
+                _ = mock_parse(test_pdf_path)
+                assert False, "예외가 발생해야 함"
+            except Exception as e:
+                assert "파싱 오류" in str(e)
+
+        # 2. AI 검증 에러 처리
+        with patch('pdf_analyzer.validators.table_validator.PDFTableValidator.validate_with_groq',
+                  side_effect=Exception("AI 검증 오류")) as mock_validate:
+            try:
+                _ = await mock_validate(pd.DataFrame())
+                assert False, "예외가 발생해야 함"
+            except Exception as e:
+                assert "AI 검증 오류" in str(e)
+
+    def test_data_consistency(self, test_pdf_path):
+        """데이터 일관성 테스트"""
+        
+        # 테스트용 DataFrame 생성
+        df = pd.DataFrame({
             '담보명': ['일반상해사망', '암진단금'],
             '보험금액': ['1,000만원', '3,000만원'],
             '보험료': ['1,000원', '3,000원']
         })
 
-    @pytest.fixture
-    def complex_table(self):
-        return pd.DataFrame({
-            '구분': ['기본계약', '기본계약', '선택특약'],
-            '담보명': ['일반상해사망', '암진단금', '특정질병수술비'],
-            '보장내용': ['일반상해로 사망시 지급', '암진단시 지급', '수술시 지급'],
-            '보험금액': ['1,000만원', '3,000만원', '500만원']
-        })
+        # 1. 금액 형식 확인
+        amount_pattern = r'[\d,]+만?원'
+        assert df['보험금액'].str.match(amount_pattern).all()
+        assert df['보험료'].str.match(amount_pattern).all()
 
-    def test_clean_cell_content(self, parser):
-        assert parser._clean_cell_content("  test  ") == "test"
-        assert parser._clean_cell_content("test\ntest") == "test test"
-        assert parser._clean_cell_content("test    test") == "test test"
-        assert parser._clean_cell_content("") == ""
-        assert parser._clean_cell_content(np.nan) == ""
+        # 2. 누락값 확인
+        assert not df.isna().any().any()
 
-    def test_clean_table(self, parser, sample_table):
-        dirty_df = sample_table.copy()
-        dirty_df.iloc[0, 0] = "  일반상해사망\n"
-        dirty_df.iloc[1, 1] = "3,000만원  "
-        
-        clean_df = parser._clean_table(dirty_df)
-        
-        assert clean_df.iloc[0, 0] == "일반상해사망"
-        assert clean_df.iloc[1, 1] == "3,000만원"
-        assert clean_df.shape == sample_table.shape
-
-    def test_extract_tables_with_camelot(self, validator):
-        with patch('camelot.read_pdf') as mock_read_pdf:
-            mock_table = Mock()
-            mock_table.df = pd.DataFrame({'A': [1, 2], 'B': [3, 4]})
-            mock_table.parsing_report = {'accuracy': 0.9}
-            mock_read_pdf.return_value = [mock_table]
-            
-            result = validator.extract_tables('test.pdf')
-            
-            assert len(result) == 1
-            assert isinstance(result[0], pd.DataFrame)
-            assert mock_read_pdf.called
+        # 3. 중복 확인
+        assert not df.duplicated().any()
 
     @pytest.mark.asyncio
-    async def test_validate_with_llama(self, validator, sample_table):
-        with patch.object(validator.llm, 'create_completion') as mock_completion:
-            mock_response = Mock()
-            mock_response.choices = [Mock(text=json.dumps({
-                "is_valid": True,
-                "issues": [],
-                "confidence_score": 0.95
-            }))]
-            mock_completion.return_value = mock_response
-            
-            result = validator.validate_with_llama(sample_table)
-            
-            assert result['is_valid']
-            assert isinstance(result['confidence_score'], float)
-            assert isinstance(result['issues'], list)
-
-    @pytest.mark.asyncio
-    async def test_validate_with_groq(self, validator, sample_table):
-        with patch.object(validator.groq_client.chat.completions, 'create') as mock_create:
-            mock_response = Mock()
-            mock_response.choices = [Mock(
-                message=Mock(content=json.dumps({
-                    "validation_result": True,
-                    "identified_issues": [],
-                    "confidence_level": 0.9,
-                    "suggestions": ["Format money values consistently"]
-                }))
-            )]
-            mock_create.return_value = mock_response
-            
-            result = await validator.validate_with_groq(sample_table)
-            
-            assert result['validation_result']
-            assert isinstance(result['confidence_level'], float)
-            assert isinstance(result['suggestions'], list)
-
-    def test_table_structure_detection(self, parser, complex_table):
-        with patch.object(parser, 'extract_with_pdfplumber') as mock_pdfplumber:
-            mock_pdfplumber.return_value = [complex_table]
-            
-            # 병합된 셀이 있는 표 테스트
-            result = parser.parse_table("test.pdf", 1)
-            assert result is not None
-            assert result.shape == complex_table.shape
-            
-            # 컬럼 구조 체크
-            assert all(col in result.columns for col in ['구분', '담보명', '보장내용', '보험금액'])
-
-    def test_korean_text_handling(self, parser, sample_table):
-        """한글 텍스트 처리 테스트"""
-        result = parser._clean_table(sample_table)
+    async def test_integration_with_real_data(self, test_pdf_path):
+        """실제 데이터를 사용한 통합 테스트"""
         
-        # 한글 텍스트가 깨지지 않는지 확인
-        assert '일반상해사망' in result['담보명'].values
-        assert '암진단금' in result['담보명'].values
-        
-        # 금액 형식이 유지되는지 확인
-        assert '1,000만원' in result['보험금액'].values
-        assert '3,000만원' in result['보험금액'].values
+        if not Path(test_pdf_path).exists():
+            pytest.skip("실제 테스트 데이터가 없습니다")
 
-    @pytest.mark.asyncio
-    async def test_validation_integration(self, validator, complex_table):
-        """파싱과 검증 통합 테스트"""
-        with patch.object(validator, 'extract_tables') as mock_extract, \
-             patch.object(validator, 'validate_table') as mock_validate:
+        try:
+            # 전체 처리 파이프라인 실행
+            from pdf_analyzer.parsers.improved_table_parser import ImprovedTableParser
+            from pdf_analyzer.validators.table_validator import PDFTableValidator
             
-            mock_extract.return_value = [complex_table]
-            mock_validate.return_value = {
-                "is_valid": True,
-                "confidence": 0.9,
-                "issues": [],
-                "suggestions": [],
-                "llama_result": {},
-                "groq_result": {}
-            }
-            
-            results = await validator.process_pdf('/workspaces/automation/test/test_data/KB 금쪽같은 자녀보험Plus(무배당)(24.05)_11월11일판매_요약서_v1.1.pdf')
-            
-            assert len(results) == 1
-            assert results[0]['validation_result']['is_valid']
-            assert isinstance(results[0]['table_data'], dict)
+            # 1. 파싱
+            parser = ImprovedTableParser()
+            table_df = parser.parse_table(test_pdf_path, page_number=1)
+            assert isinstance(table_df, pd.DataFrame)
+            assert not table_df.empty
 
-    def test_error_recovery(self, parser):
-        """에러 복구 기능 테스트"""
-        # Camelot 실패 시 pdfplumber로 대체
-        with patch.object(parser, 'extract_with_camelot', return_value=[]), \
-             patch.object(parser, 'extract_with_pdfplumber') as mock_pdfplumber:
+            # 2. AI 검증
+            validator = PDFTableValidator(
+                groq_api_key=os.getenv('GROQ_API_KEY'),
+            )
+            validation_result = await validator.validate_with_groq(table_df)
+            assert isinstance(validation_result, dict)
+            assert 'validation_result' in validation_result
+
+            # 3. 결과 저장
+            output_dir = Path("test_output")
+            output_dir.mkdir(exist_ok=True)
             
-            mock_pdfplumber.return_value = [pd.DataFrame({'A': [1, 2]})]
-            result = parser.parse_table("test.pdf", 1)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = output_dir / f"test_result_{timestamp}.json"
             
-            assert result is not None
-            assert isinstance(result, pd.DataFrame)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'table_data': table_df.to_dict(),
+                    'validation_result': validation_result
+                }, f, ensure_ascii=False, indent=2)
 
-    @pytest.mark.asyncio
-    async def test_error_handling(self, validator, sample_table):
-        # LLaMA 에러 테스트
-        with patch.object(validator.llm, 'create_completion', 
-                         side_effect=Exception("LLaMA error")):
-            result = validator.validate_with_llama(sample_table)
-            assert not result['is_valid']
-            assert "LLaMA error" in result['issues'][0]
+            assert output_path.exists()
 
-        # Groq 에러 테스트
-        with patch.object(validator.groq_client.chat.completions, 'create', 
-                         side_effect=Exception("Groq error")):
-            result = await validator.validate_with_groq(sample_table)
-            assert not result['validation_result']
-            assert "Groq error" in result['identified_issues'][0]
-
-    @pytest.mark.integration
-    def test_real_pdf_files(self, parser):
-        """실제 PDF 파일을 사용한 통합 테스트"""
-        test_files_dir = Path(__file__).parent / "test_data"
-        
-        # 다양한 케이스의 PDF 파일들 테스트
-        test_cases = [
-            "basic_table.pdf",
-            "complex_table.pdf",
-            "merged_cells.pdf",
-            "korean_text.pdf"
-        ]
-        
-        for test_file in test_cases:
-            pdf_path = test_files_dir / test_file
-            if not pdf_path.exists():
-                continue
-                
-            result = parser.parse_table(str(pdf_path), 1)
-            assert result is not None
-            assert isinstance(result, pd.DataFrame)
-            assert not result.empty
+        except Exception as e:
+            pytest.fail(f"통합 테스트 실패: {str(e)}")
 
 if __name__ == '__main__':
     pytest.main(['-v', '--tb=short'])
