@@ -13,7 +13,7 @@ class TestPDFAnalyzer:
     @pytest.fixture(scope="class")
     def test_pdf_path(self):
         # 테스트 PDF 파일 경로를 상대 경로로 설정
-        return Path("tests/test_data/sample.pdf")
+        return Path("/workspaces/automation/tests/test_data/ㅇKB+9회주는+암보험Plus(무배당)(25.01)_요약서_v1.0.hwp.pdf")
 
     @pytest.fixture(scope="class")
     def expected_structure(self):
