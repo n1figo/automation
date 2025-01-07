@@ -2,6 +2,7 @@ pandas
 numpy
 camelot-py[cv]
 pdfplumber
+pycryptodome
 llama-cpp-python
 groq
 
