@@ -1,0 +1,10 @@
+pandas
+numpy
+camelot-py[cv]
+pdfplumber
+llama-cpp-python
+groq
+
+[test]
+pytest
+pytest-asyncio
