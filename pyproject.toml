@@ -8,3 +8,6 @@ python_files = ["test_*.py"]
 markers = [
     "integration: marks tests as integration tests",
 ]
+
+[project.dependencies]
+pycryptodome = ">=3.19.0"
