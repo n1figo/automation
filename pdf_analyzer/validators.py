@@ -32,3 +32,10 @@ class PDFTableValidator:
             "confidence": confidence,
             "suggestions": suggestions
         }
+
+    def correct_table(self, table: pd.DataFrame) -> pd.DataFrame:
+        """AI를 사용하여 테이블 데이터를 교정합니다."""
+        # AI 교정 로직 구현
+        corrected_table = table.copy()
+        # TODO: AI 교정 로직 추가
+        return corrected_table

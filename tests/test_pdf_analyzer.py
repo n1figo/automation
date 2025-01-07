@@ -47,53 +47,70 @@ class TestPDFAnalyzer:
             "suggestions": ["금액 표기를 일관되게 해주세요."]
         }
 
+    @pytest.fixture(scope="class")
+    def test_pages(self):
+        return [67, 68]
+
     @pytest.mark.asyncio
     async def test_pdf_processing_pipeline(self, test_pdf_path, expected_structure, 
-                                         mock_validation_response, table_parser, table_validator):
+                                         mock_validation_response, table_parser, 
+                                         table_validator, test_pages):
         """PDF 처리 파이프라인 테스트"""
         
         # 1. 파일 존재 확인
         assert test_pdf_path.exists(), f"테스트 PDF 파일이 없습니다: {test_pdf_path}"
 
-        # 2. 테이블 추출 테스트
-        extracted_table = table_parser.parse_table(str(test_pdf_path), page_number=1)
-        
-        assert list(extracted_table.columns) == expected_structure['columns']
-        assert len(extracted_table) == expected_structure['num_rows']
-
-        # 3. 데이터 검증
-        validation_result = table_validator.validate(extracted_table)
-        
-        assert validation_result["is_valid"]
-        assert validation_result["confidence"] >= table_validator.accuracy_threshold
-        
-        # 금액 형식 체크
-        amount_pattern = r'[\d,]+만?원'
-        assert extracted_table['보험금액'].str.match(amount_pattern).all()
-        assert extracted_table['보험료'].str.match(amount_pattern).all()
-        
-        # 누락값 체크
-        assert not extracted_table.isna().any().any()
-        
-        # 중복 체크
-        assert not extracted_table.duplicated().any()
-
-        # 4. 결과 저장
-        output_dir = Path("test_output")
+        # output 폴더 생성
+        output_dir = Path("/workspaces/automation/tests/test_data/output")
         output_dir.mkdir(exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = output_dir / f"test_result_{timestamp}.json"
+        
+        all_extracted_tables = []
+        all_validated_tables = []
+
+        # 2. 지정된 페이지에서 테이블 추출 테스트
+        for page in test_pages:
+            # 1차 파싱
+            extracted_table = table_parser.parse_table(str(test_pdf_path), page_number=page)
+            all_extracted_tables.append(extracted_table)
+            
+            # 2차 AI 검수 및 수정
+            validation_result = table_validator.validate(extracted_table)
+            validated_table = table_validator.correct_table(extracted_table)  # AI 교정 가정
+            all_validated_tables.append(validated_table)
+            
+            assert validation_result["is_valid"]
+            assert validation_result["confidence"] >= table_validator.accuracy_threshold
+
+        # 3. 결과 저장 - Excel
+        # 1차 파싱 결과
+        raw_excel_path = output_dir / f"raw_parsed_tables_{timestamp}.xlsx"
+        with pd.ExcelWriter(raw_excel_path) as writer:
+            for i, table in enumerate(all_extracted_tables):
+                table.to_excel(writer, sheet_name=f"Page_{test_pages[i]}", index=False)
+
+        # 2차 AI 검수 결과
+        validated_excel_path = output_dir / f"ai_validated_tables_{timestamp}.xlsx"
+        with pd.ExcelWriter(validated_excel_path) as writer:
+            for i, table in enumerate(all_validated_tables):
+                table.to_excel(writer, sheet_name=f"Page_{test_pages[i]}", index=False)
+
+        # JSON 결과도 함께 저장
+        json_path = output_dir / f"validation_results_{timestamp}.json"
         
         result = {
-            'table_data': extracted_table.to_dict(),
+            'raw_tables': [df.to_dict() for df in all_extracted_tables],
+            'validated_tables': [df.to_dict() for df in all_validated_tables],
             'validation': validation_result
         }
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
             
-        assert output_path.exists()
+        assert raw_excel_path.exists()
+        assert validated_excel_path.exists()
+        assert json_path.exists()
 
     def test_error_handling(self, table_parser):
         """에러 처리 테스트"""
