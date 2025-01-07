@@ -1,0 +1,778 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<meta charset="euc-kr" />
+<title>KB암보험 건강하게 사는 이야기</title>
+<script type="text/javascript" src="/script/jquery/jquery.min.js"></script>
+<!--[if lt IE 9]>
+<script type="text/javascript" src="/library/js/common/html5shiv.js"></script>
+<![endif]-->
+<script type="text/javascript" src="/library/js/common/common.js"></script>
+<script type="text/javascript" src="/library/js/pub/kbinsure_front.js"></script>
+<link rel="stylesheet" type="text/css" href="/library/css/common/style.css" media="all" />
+<link rel="stylesheet" type="text/css" href="/library/css/common/ins_prdt.css" />
+</head>
+<body class="ins_prdt">
+<!-- skip -->
+<div class="skipNavi"> <a href="#contents">본문으로 바로가기</a> <a href="#lnb">하위메뉴 바로가기</a> </div>
+<!-- //skip --> 
+
+<!-- header -->
+<header id="header"> </header>
+<!-- //header --> 
+
+<!-- mSection -->
+<section id="mSection">
+  <div class="wrap"> 
+    <!-- lnb -->
+    <div id="lnb"> </div>
+    <!--//lnb --> 
+    
+    <!-- article -->
+    <article id="contents"> 
+      
+      <!-- title -->
+      <h1>KB 9회주는 암보험Plus</h1>
+      <div class="ins_socialBtn"> <a href="javascript:tweeter('CG302150001.ec','KB내마음아는암보험');"><img src="/images/ins_prdt/props_prdt/btn_go_twit.png" alt="트위터 이동(새창)"></a> <a href="javascript:shareFacebook('CG302150001.ec','KB내마음아는암보험');"><img src="/images/ins_prdt/props_prdt/btn_go_facebook.png" alt="페이스북 이동(새창)"></a> </div>
+      
+      <!-- //title --> 
+      
+      <span class="h3AreaBtn"> <a href="javascript:goPolView('22066');" title="새창" class="btnInsu">보험약관</a> </span> 
+      
+      <!-- contents --> 
+      <!-- ins visual -->
+      <div class="prdt_inform_tit" style="height: 60px;">
+        <dl class="vis_Tit">
+          <dt>
+            <div> <span class="lTit">KB 9회주는 암보험Plus</span> <span class="date">(무배당)(24.05)</span>
+            </div>
+          </dt>
+        </dl>
+      </div>
+      <!-- //ins visual --> 
+      
+      <!-- prdt_inform_visual -->
+      <div class="prdt_inform_visual inBtn_type">
+        <div class="leftWBox">
+          <div class="leftBox">
+            <p class="smallText">고령화로 암 걱정된다면?<br>
+              이제 고령자에게도 꼭 필요한 암보장보험! <br>
+              최대 75세까지 가입 가능한</p>
+            <p class="bigText"><span>KB손해보험<br>
+              9회주는 암보험Plus <br>
+              </span> 으로 대비하세요.</p>
+          </div>
+          <div class="rightBox"><img src="/images/ins_prdt/cncr_helth_ins/prdt_inform_visual1.jpg" alt="보건복지부 중증암등록본부 '2016년 국가암 등록 통계 발표'출처 " /></div>
+        </div>
+        <div class="rightWBox">
+          <p class="tit">보험료 간편하게 확인해보세요!</p>
+          <div class="tb_none mgt25">
+            <table class="tb_default12">
+              <colgroup>
+              <col style="width:25%;">
+              <col style="*">
+              </colgroup>
+              <tbody>
+                <tr >
+                  <td class="tit2">나이</td>
+                  <td><input type="text" style="width:61px;text-align:left;font-weight:100; padding: 0 10px 0 10px !important;" title="나이 입력" placeholder="예 : 30 ">
+                    <span class="txt">세</span></td>
+                </tr>
+                <tr>
+                  <td class="tit2">성별</td>
+                  <td><input type="radio" id="man" name="1">
+                    <label for="man">남</label>
+                    <input type="radio" id="woman" name="1">
+                    <label for="woman">여</label></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="ins_commBtn mgt10 pd0">
+            <p><a href="javascript:content('CG306050201.ecs?pdcd=22076');" class="btn_calculate2_big mg0 "><span class="ico"></span>보험료계산</a></p>
+            <ul class="mgt10">
+              <li><a href="javascript:content('CG306050101.ecs?pdcd=22076&amp;regtype=02');" class="btn_counsel"><span class="ico"></span>상담신청</a></li>
+              <li><a href="javascript:content('CG306050101.ecs?pdcd=22076&amp;regtype=02');" class="btn_plan"><span class="ico"></span>자유설계</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <!-- //prdt_inform_visual --> 
+      
+      <!-- tab -->
+      <ul class="tabM tabM4">
+        <li id="tabprdtinform_c" class=""><a href="#" id="tabprdtinform">상품안내</a></li>
+        <li id="tabguarnt_c" class=""><a href="#" id="tabguarnt">보장내용</a></li>
+        <li id="tabexmpl_c" class="on"><a href="#" id="tabexmpl">가입예시</a></li>
+        <li id="tabinformed_c"><a href="#" id="tabinformed">알아두실사항</a></li>
+      </ul>
+      <!-- //tab --> 
+      <!-- ins_inform --> 
+      
+      <!-- 가입예시 본문내용 시작 -->
+      <div id="exmpl" style="">
+        <h4 class="h4_title mgt30">가입예시</h4>
+        <h5 class="h5_title mgt15">가입기준 : <span class="normal">1종(세만기), 8대납입면제형, 상해1급, 20년납 100세만기, <span class="point03">일부특약 100세 갱신 종료,</span> 40세, 기본플랜</span></h5>
+        <div class="tb_wrap mgt10">
+          <table class="tb_default03" summary="보장명,가입금액,납입/보험기간, 30세,40세,50세 남여 보험료에 대한 가입예시 표">
+            <caption>
+            가입예시
+            </caption>
+            <colgroup>
+            <col style="width:5%;">
+            <col style="width:50%;">
+            <col style="width:10%;">
+            <col style="width:15%;">
+            <col style="width:10%;">
+            <col style="width:10%;">
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">구분</th>
+                <th scope="col">보장명</th>
+                <th scope="col">가입금액</th>
+                <th scope="col">납입/<br>
+                  보험기간</th>
+                <th scope="col">남자</th>
+                <th scope="col" class="thnone">여자</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th rowspan="2" class="tx_ct" scope="row">기본<br>
+                  계약</th>
+                <th class="tx_ct" scope="row">암진단비(유사암제외)(감액없음)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">18,200원</td>
+                <td class="tx_rt vfont_s02 thnone">13,390원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">유사암진단비(감액없음) </th>
+                <td>200만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">390원</td>
+                <td class="tx_rt vfont_s02 thnone">1,030원</td>
+              </tr>
+              <tr>
+                <th rowspan="1" class="tx_ct" scope="row">의무<br>
+                  부가<br>
+                  계약</th>
+                <th class="tx_ct" scope="row">보험료납입면제대상보장(8대)</th>
+                <td>10만원</td>
+                <td>20년/20년</td>
+                <td class="tx_rt vfont_s02">89원</td>
+                <td class="tx_rt vfont_s02 thnone">74원</td>
+              </tr>
+              <tr>
+                <th rowspan="20" class="tx_ct" scope="row">선택<br>
+                  계약</th>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(특정소액암진단비Ⅱ)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">5,020원</td>
+                <td class="tx_rt vfont_s02 thnone">4,880원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ<br>
+                (생식기암 및 비뇨기관암진단비(자궁,전립선,방광제외))</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">1,580원</td>
+                <td class="tx_rt vfont_s02 thnone">1,060원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(소화기관암진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">7,500원</td>
+                <td class="tx_rt vfont_s02 thnone">4,050원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(혈액암진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">1,450원</td>
+                <td class="tx_rt vfont_s02 thnone">1,180원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(두경부암진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">730원</td>
+                <td class="tx_rt vfont_s02 thnone">280원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(11대특정암진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">630원</td>
+                <td class="tx_rt vfont_s02 thnone">480원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(폐암진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">4,010원</td>
+                <td class="tx_rt vfont_s02 thnone">1,790원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(간암,담낭암,기타담도암 및 췌장암 진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">4,130원</td>
+                <td class="tx_rt vfont_s02 thnone">2,490원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">통합암진단비Ⅱ(3대특정고액암진단비)</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">260원</td>
+                <td class="tx_rt vfont_s02 thnone">190원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">전이암진단비</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">9,900원</td>
+                <td class="tx_rt vfont_s02 thnone">6,720원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">특정암Ⅱ진단비</th>
+                <td>1천만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">1,720원</td>
+                <td class="tx_rt vfont_s02 thnone">1,740원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">질병수술비(백내장 및 대장용종내시경절제제외)(매회지급)</th>
+                <td>30만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">5,220원</td>
+                <td class="tx_rt vfont_s02 thnone">6,213원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">암수술비<br>(유사암포함,연간1회한)</th>
+                <td>3백만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">7,455원</td>
+                <td class="tx_rt vfont_s02 thnone">5,982원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">다빈치로봇암수술비<br>(갑상선암 및전립선암 제외)(최초1회한)(갱신형)</th>
+                <td>1천만원</td>
+                <td class="point03">10년갱신/100세</td>
+                <td class="tx_rt vfont_s02">520원</td>
+                <td class="tx_rt vfont_s02 thnone">500원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">상해수술비(종합병원)</th>
+                <td>50만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">635원</td>
+                <td class="tx_rt vfont_s02 thnone">1,385원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">항암방사선치료비</th>
+                <td>5백만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">4,330원</td>
+                <td class="tx_rt vfont_s02 thnone">2,865원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">항암약물치료비</th>
+                <td>5백만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">6,290원</td>
+                <td class="tx_rt vfont_s02 thnone">4,210원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">암직접치료통원일당</th>
+                <td>1만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">1,995원</td>
+                <td class="tx_rt vfont_s02 thnone">1,607원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">간병인사용질병입원일당(1일이상)(요양병원 제외)</th>
+                <td>3만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">4,095원</td>
+                <td class="tx_rt vfont_s02 thnone">4,848원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row">간병인사용상해입원일당(1일이상)(요양병원 제외)</th>
+                <td>3만원</td>
+                <td>20년/100세</td>
+                <td class="tx_rt vfont_s02">1,191원</td>
+                <td class="tx_rt vfont_s02 thnone">1,551원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row" colspan="4">보장보험료</th>
+                <td class="tx_rt vfont_s02">87,340원</td>
+                <td class="tx_rt vfont_s02 thnone">68,515원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row" colspan="4">적립보험료</th>
+                <td class="tx_rt vfont_s02">2,660원</td>
+                <td class="tx_rt vfont_s02 thnone"> 1,485원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row" colspan="4">합계보험료</th>
+                <td class="tx_rt vfont_s02">90,000원</td>
+                <td class="tx_rt vfont_s02 thnone">70,000원</td>
+              </tr>
+              <tr>
+                <th class="tx_ct" scope="row" colspan="4">예상만기환급률</th>
+                <td class="tx_rt vfont_s02">5.1%</td>
+                <td class="tx_rt vfont_s02 thnone">3.7%</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="tip_wrap"> 
+            <!-- 2023-05-08 수정 -->
+            <dl class="tipArea">
+              <dt><img src="/images/common/comm/tit_tip.gif" alt=""></dt>
+              <dt> </dt>
+              <dd>
+                <ul class="tipList">
+                  <li> <span class="list_l">01</span> <span class="list_r">위 보험료는 가입예시기준으로 산출된 보험료로서 가입자의 연령, 성별 및 직업, 직종, 납기, 만기 등에 따라 달라질 수 있음을 알려 드립니다.</span> </li>
+                </ul>
+              </dd>
+            </dl>
+            
+          </div>
+          <div class="tb_text_abso mgt15 lh14">
+            <h4 class="h4_title mgt30">연령별 보장보험료 예시</h4>
+            <h5 class="h5_title">가입기준 : <span class="normal"> 위 가입예시 담보 가입시 보장보험료, 1종(세만기), 8대납입면제형, 상해1급,</span> <span class="point03">20년납 100세만기</span></h5>
+          </div>
+          <div class="tb_wrap mgt10">
+            <table class="tb_default03" summary="세만기담보(적립부분 포함)의 예상해약환급금의 경과기간,납입보험료,적용이율시 해약환급금,예상환급금,예상환급률 반영의 대한 표">
+              <caption>
+              연령별 보험료 예시
+              </caption>
+              <colgroup>
+              <col style="width:30%;">
+              <col style="width:35%;">
+              <col style="width:35;">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th scope="col">연령</th>
+                  <th scope="col">남자</th>
+                  <th scope="col" class="thnone">여자</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th class="tx_ct">30세</th>
+                  <td>68,051원</td>
+                  <td class="thnone">57,368원</td>
+                </tr>
+                <tr>
+                  <th class="tx_ct">40세</th>
+                  <td>87,340원</td>
+                  <td class="thnone">68,515원</td>
+                </tr>
+                <tr>
+                  <th class="tx_ct">50세</th>
+                  <td>113,720원</td>
+                  <td class="thnone">76,391원</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="tb_text_abso mgt15 lh14">
+            <h5 class="h5_title">예상해약환급금 - 40세 남자 기준</h5>
+            <span class="tb_textTop">(단위 : 원)</span> </div>
+          <div class="tb_wrap mgt10">
+            <table class="tb_default03" summary="40세 남자를 기준으로 비갱신담보(적립부분 포함)의 예상해지환급금의 경과기간,납입보험료,적용이율시 해지환급금,예상환급금,예상환급률 반영의 대한 표">
+              <caption>
+              예상해약환급금- 40세 남자 기준
+              </caption>
+              <colgroup>
+              <col style="width:7%;">
+              <col style="width:12%;">
+              <col style="width:15%;">
+              <col style="width:12%;">
+              <col style="width:15%;">
+              <col style="width:12%;">
+              <col style="width:15%;">
+              <col style="width:12%;">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th scope="col" rowspan="4">경과<br>
+                    기간</th>
+                  <!--th scope="col" id="a" class="thnone">기본계약 및 기타특약담보(갱신특약 제외)</th--> 
+                </tr>
+                <tr>
+                  <th colspan="7" id="a1" scope="col">기본계약 및 기타특약담보(갱신특약 제외)</th>
+                </tr>
+                <tr>
+                  <th rowspan="2" id="a1" scope="col">납입보험료</th>
+                  <th scope="col" colspan="2" id="a2">최저보증이율시</th>
+                  <th scope="col" colspan="2" id="a31">평균공시이율</th>
+                  <th scope="col" colspan="2" id="a32" class="thnone">공시이율</th>
+                </tr>
+                <tr>
+                  <th scope="col" id="ex1">예상환급금</th>
+                  <th scope="col" id="ex2">예상환급률</th>
+                  <th scope="col" id="ex3">예상환급금</th>
+                  <th scope="col" id="ex4">예상환급률</th>
+                  <th scope="col" id="ex5">예상환급금</th>
+                  <th scope="col" id="ex6" class="thnone">예상환급률</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">1,073,760</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">8,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">0.7%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">8,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex4">0.8%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">8,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a3 a33 ex6">0.8%</td>
+                </tr>
+                <tr>
+                  <td>3년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">3,221,280</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">1,654,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">51.4%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">1,656,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">51.4%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">1,656,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">51.4%</td>
+                </tr>
+                <tr>
+                  <td>5년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">5,368,800</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">3,493,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">65.1%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">3,497,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">65.1%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">3,497,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">65.1%</td>
+                </tr>
+                <tr>
+                  <td>10년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">10,737,600</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">7,813,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">72.8%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">7,833,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">72.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">7,833,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">72.9%</td>
+                </tr>
+                <tr>
+                  <td>15년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">16,106,400</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">11,971,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">74.3%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">12,015,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">74.6%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">12,015,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">74.6%</td>
+                </tr>
+                <tr>
+                  <td>20년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">21,475,200</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">16,227,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">75.6%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">16,308,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">75.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">16,308,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">75.9%</td>
+                </tr>
+                <tr>
+                  <td>만기</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">21,475,200</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">546,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">2.5%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3">1,127,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex4">5.3%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5">1,127,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a3 a33 ex6">5.3%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="tb_wrap mgt10">
+            <table class="tb_default03" summary="세만기담보(적립부분 포함)의 예상해지환급금의 경과기간,납입보험료,적용이율시 해지환급금,예상환급금,예상환급률 반영의 대한 표">
+              <caption>
+              예상해지환급금
+              </caption>
+              <colgroup>
+              <col style="width:10%;">
+              <col style="width:10%;">
+              <col style="width:10%;">
+              <col style="width:10%;">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th width="20" rowspan="2" scope="col" >경과기간</th>
+                  <th colspan="3"  id="a1" scope="col">갱신특약(10년만기)</th>
+                </tr>
+                <tr>
+                  <th width="75"  id="a1" scope="col">납입보험료</th>
+                  <th width="70"  id="a2"  scope="col">예상환급금</th>
+                  <th width="70"  id="a3" class="thnone" scope="col">예상환급률</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">6,240</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">0</td>
+                  <td width="39" class="tx_rt vfont_s02 thnone" headers="a a2 ex2">0.0%</td>
+                </tr>
+                <tr>
+                  <td>3년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">18,720</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">77</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">0.4%</td>
+                </tr>
+                <tr>
+                  <td>5년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">31,200</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">2,819</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">9.0%</td>
+                </tr>
+                <tr>
+                  <td>10년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">62,400</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">0</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">0.0%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="tb_text_abso mgt15 lh14">
+            <h5 class="h5_title">예상해약환급금 - 40세 여자 기준</h5>
+            <span class="tb_textTop">(단위 : 원)</span> </div>
+          <div class="tb_wrap mgt10">
+            <table class="tb_default03" summary="40세 여자를 기준으로 비갱신담보(적립부분 포함)의 예상해지환급금의 경과기간,납입보험료,적용이율시 해지환급금,예상환급금,예상환급률 반영의 대한 표">
+              <caption>
+              예상해약환급금- 40세 여자 기준
+              </caption>
+              <colgroup>
+              <col style="width:7%;">
+              <col style="width:12%;">
+              <col style="width:15%;">
+              <col style="width:12%;">
+              <col style="width:15%;">
+              <col style="width:12%;">
+              <col style="width:15%;">
+              <col style="width:12%;">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th scope="col" rowspan="4">경과<br>
+                    기간</th>
+                </tr>
+                <tr>
+                  <th colspan="7" id="a1" scope="col">기본계약 및 기타특약담보(갱신특약 제외)</th>
+                </tr>
+                <tr>
+                  <th rowspan="2" id="a1" scope="col">납입보험료</th>
+                  <th scope="col" colspan="2" id="a2">최저보증이율시</th>
+                  <th scope="col" colspan="2" id="a31">평균공시이율</th>
+                  <th scope="col" colspan="2" id="a32" class="thnone">공시이율</th>
+                </tr>
+                <tr>
+                  <th scope="col" id="ex1">예상환급금</th>
+                  <th scope="col" id="ex2">예상환급률</th>
+                  <th scope="col" id="ex3">예상환급금</th>
+                  <th scope="col" id="ex4">예상환급률</th>
+                  <th scope="col" id="ex5">예상환급금</th>
+                  <th scope="col" id="ex6" class="thnone">예상환급률</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">816,180</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> -</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">0.0%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> -</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex4">0.0%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> -</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a3 a33 ex6">0.0%</td>
+                </tr>
+                <tr>
+                  <td>3년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">2,448,540</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> 930,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">38.0%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> 930,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">38.0%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> 930,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">38.0%</td>
+                </tr>
+                <tr>
+                  <td>5년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">4,080,900</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> 2,077,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">50.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> 2,077,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">50.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> 2,077,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">50.9%</td>
+                </tr>
+                <tr>
+                  <td>10년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">8,161,800</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> 4,646,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">56.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> 4,646,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">56.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> 4,646,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">56.9%</td>
+                </tr>
+                <tr>
+                  <td>15년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">12,242,700</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> 7,157,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">58.5%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> 7,157,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">58.5%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> 7,157,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">58.5%</td>
+                </tr>
+                <tr>
+                  <td>20년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">16,323,600</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> 9,781,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">59.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> 9,781,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">59.9%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> 9,781,000</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a2 ex2">59.9%</td>
+                </tr>
+                <tr>
+                  <td>만기</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">16,323,600</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1"> -</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex2">0.0%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex3"> -</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a31 ex4">0.0%</td>
+                  <td class="tx_rt vfont_s02" headers="a a3 a33 ex5"> -</td>
+                  <td class="thnone tx_rt vfont_s02" headers="a a3 a33 ex6">0.0%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="tb_wrap mgt10">
+            <table class="tb_default03" summary="세만기담보(적립부분 포함)의 예상해지환급금의 경과기간,납입보험료,적용이율시 해지환급금,예상환급금,예상환급률 반영의 대한 표">
+              <caption>
+              예상해지환급금
+              </caption>
+              <colgroup>
+              <col style="width:10%;">
+              <col style="width:10%;">
+              <col style="width:10%;">
+              <col style="width:10%;">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th width="20" rowspan="2" scope="col" >경과기간</th>
+                  <th colspan="3"  id="a1" scope="col">갱신특약(10년만기)</th>
+                </tr>
+                <tr>
+                  <th width="75"  id="a1" scope="col">납입보험료</th>
+                  <th width="70"  id="a2"  scope="col">예상환급금</th>
+                  <th width="70"  id="a3" class="thnone" scope="col">예상환급률</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">6,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">0</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">0.0%</td>
+                </tr>
+                <tr>
+                  <td>3년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">18,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">0</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">0.0%</td>
+                </tr>
+                <tr>
+                  <td>5년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">30,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">1,567</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">5.2%</td>
+                </tr>
+                <tr>
+                  <td>10년</td>
+                  <td class="tx_rt vfont_s02" headers="a a1">60,000</td>
+                  <td class="tx_rt vfont_s02" headers="a a2 ex1">0</td>
+                  <td class="tx_rt vfont_s02 thnone" headers="a a2 ex2">0.0%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="tip_wrap">
+            <dl class="tipArea">
+              <dt><img src="/images/common/comm/tit_tip.gif" alt="Tip"></dt>
+              <dt> </dt>
+              <dd>
+                <ul class="tipList">
+                  <li> <span class="list_l">01</span> <span class="list_r">상기 예시된 환급금은 천원미만을 절사하여 예시한 금액입니다.</span> </li>
+                  <li> <span class="list_l">02</span> <span class="list_r">상기 예상환급금/예상환급률은 적립부분 순보험료(적립보험료에서 사업비를 차감한 보험료)를 최저보증이율, 평균공시이율, 공시이율을 기준으로 계산한 금액과 보장부분 환급금을 더하여 예시한 금액입니다. 단, 평균공시이율은 판매시점의 공시이율을 최대한도로 합니다. 
+                    (2024년 기준 평균공시이율 2.75%, "보장성-1701 공시이율" 10월 현재 연 1.65% 가정시)</span> </li>
+                  <li> <span class="list_l">03</span> <span class="list_r">상기 공시이율은 세전 기준으로 작성되었습니다. </span> </li>
+                  <li> <span class="list_l">04</span> <span class="list_r point03">실제 해지시에는 “보장성-1701 공시이율”을 적용합니다. 따라서 위 예시표상의 적용이율과 실제 해지시 적용되는 공시이율의 차이, 향후 공시이율의 변동, 계약내용의 변경, 보험료 납입일자, 중도인출 등에 따라 예시된 금액과 해약환급금이 달라 질 수 있습니다. 또한 상기 예시환급금은 미래의 수익을 보장하지 않습니다. </span> </li>
+                  <li> <span class="list_l">05</span> <span class="list_r">“보장성-1701 공시이율”의 최저보증이율은 연단위 복리 0.2% 적용합니다.</span> </li>
+                  <li> <span class="list_l">06</span> <span class="list_r"> “보장성-1701 공시이율”은 매월 마지막날 회사가 정한 이율로 하며, 다음날 1일부터 마지막날까지 1개월간 확정 적용합니다.</span> </li>
+                  <li> <span class="list_l">07</span> <span class="list_r">평균공시이율은 감독원장이 정하는 바에 따라 산정한 전체 보험회사 공시이율의 평균으로, 전년도 8월말 기준 직전 12개월간 보험회사 평균공시이율입니다. </span> </li>
+                  <li> <span class="list_l">08</span> <span class="list_r">계약체결시 보장성보험으로 분류되었다 하더라도 중도해지시 해약환급금(중도인출액 포함)이 기납입보험료 보다 큰 경우 동차액에 대하여 이자소득세가 부과 될 수 있습니다. 이 계약의 세제와 관련된 사항은 관련 세법의 제 · 개정이나 폐지에 따라 변경될 수 있습니다.</span> </li>
+                  <li> <span class="list_l">09</span> <span class="list_r point03">갱신시점의 보험료는 최초(갱신전) 계약보다 연령증가, 위험률 증가 등 보험요율의 변동에 의해 갱신시점 연령에 해당하는 보험료를 납입하므로 갱신시점의 보험료는 최초(갱신전) 계약보다 대부분 증가합니다. </span> </li>
+                </ul>
+                </span>
+                </li>
+                </ul>
+              </dd>
+            </dl>
+          </div>
+          <h5 class="h5_title mgt15">해약환급금이 적은 이유</h5>
+          <ul class="Gray_bul mgt10 mgb10">
+            <li>장기손해보험상품은 은행의 저축과 달리 위험보장과 저축기능을 겸한 제도로서 보험계약자가 납입한 보험료 중 일부는 불의의 사고를<br>
+              당한 다른 보험계약자에게 지급되는 보험금의 재원으로, 또 다른 일부는 보험회사 운영에 필요한 사업경비로 사용되므로 중도해약시<br>
+              지급되는 해약환급금은 납입한 보험료보다 적거나 없을 수도 있습니다.</li>
+          </ul>
+          
+          <!-- //가입예시 --> 
+          
+        </div>
+        <div class="guideBoxWrap">
+          <p class="stit">이용안내</p>
+          <ul class="bulBox">
+            <li>위 사항은 약관 내용을 요약 발췌한 것으로 세부 내용은 약관 및 상품설명서를 참조하시기 바랍니다.</li>
+          </ul>
+        </div>
+      </div>
+      <!-- 가입예시 본문 끝 -->
+      
+      <div class="mgt50">
+        <p class="adminNumber" id="adminNo">KB손해보험 준법감시인 심의필 결재중</p>
+      </div>
+      
+      <!-- //ins_inform --> 
+      
+      <!-- //contents --> 
+      
+    </article>
+    <!-- //article --> 
+  </div>
+</section>
+<!-- //mSection --> 
+
+<!-- footer -->
+<footer id="mFooter"> </footer>
+<!-- //mFooter -->
+</body>
+</html>
