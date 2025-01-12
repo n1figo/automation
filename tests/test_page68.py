@@ -28,7 +28,7 @@ class TestPage68Analysis:
     @pytest.fixture
     def pdf_path(self, test_data_dir):
         """테스트할 PDF 파일 경로"""
-        return test_data_dir / "test_document.pdf"
+        return test_data_dir / "/workspaces/automation/tests/test_data/ㅇKB+9회주는+암보험Plus(무배당)(25.01)_요약서_v1.0.hwp.pdf"
 
     def test_page_68_table_structure(self, analyzer, pdf_path):
         """68페이지 표 구조 분석 테스트"""
