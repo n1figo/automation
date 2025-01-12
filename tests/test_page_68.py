@@ -4,7 +4,11 @@ import json
 import pandas as pd
 from openpyxl import load_workbook
 import logging
-from table_analyzer import TableAnalyzer, MergedCell
+from tests.table_analyzer import TableAnalyzer, MergedCell
+import sys
+from pathlib import Path
+from .table_analyzer import TableAnalyzer, MergedCell
+
 
 class TestPage68Analysis:
     @pytest.fixture
