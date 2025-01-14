@@ -19,6 +19,17 @@ import torch
 from transformers import AutoModelForObjectDetection, AutoProcessor
 from tests.table_analyzer import TableAnalyzer, MergedCell
 
+import sys
+import os
+
+# 프로젝트 루트를 Python 경로에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(project_root)
+
+# 이후 src 모듈을 정상적으로 가져올 수 있음
+# from src.analyzers.analyzer import AnalyzerClass
+
+
 @dataclass
 class TableQualityMetrics:
     """표 파싱 품질 메트릭"""
