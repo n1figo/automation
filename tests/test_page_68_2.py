@@ -26,8 +26,9 @@ import os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(project_root)
 
-# 이후 src 모듈을 정상적으로 가져올 수 있음
-# from src.analyzers.analyzer import AnalyzerClass
+# 이제 tests.table_analyzer를 가져올 수 있음
+from tests.table_analyzer import TableAnalyzer, MergedCell
+
 
 
 @dataclass
