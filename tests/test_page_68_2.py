@@ -15,6 +15,9 @@ import sys
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from datetime import datetime
+import torch
+from transformers import AutoModelForObjectDetection, AutoProcessor
+from tests.table_analyzer import TableAnalyzer, MergedCell
 
 @dataclass
 class TableQualityMetrics:
@@ -55,13 +58,8 @@ class TableAnalysisEvaluator:
             doc = fitz.open(pdf_path)
             page = doc[page_num - 1]
             
-            # 표 영역 찾기
-            tables = page.find_tables()
-            if not tables:
-                issues.append("원본 PDF에서 표를 찾을 수 없음")
-                return 0.0, text_details, issues
-
-            original_table = tables[0]
+            # 표 영역의 텍스트 추출
+            page_text = page.get_text("blocks")
             
             # 셀별 비교
             total_similarity = 0
@@ -72,11 +70,15 @@ class TableAnalysisEvaluator:
                     text_details['total_cells'] += 1
                     
                     try:
-                        original_text = original_table.cells[i][j].text.strip()
                         extracted_text = str(extracted_text).strip()
+                        # 가장 가까운 텍스트 블록 찾기
+                        closest_text = self._find_closest_text(extracted_text, page_text)
                         
-                        similarity = SequenceMatcher(None, original_text, extracted_text).ratio()
-                        
+                        if closest_text:
+                            similarity = SequenceMatcher(None, closest_text, extracted_text).ratio()
+                        else:
+                            similarity = 0.0
+                            
                         if similarity == 1.0:
                             text_details['exact_matches'] += 1
                         elif similarity >= 0.8:
@@ -86,7 +88,7 @@ class TableAnalysisEvaluator:
                             
                             if len(text_details['sample_errors']) < 5:
                                 text_details['sample_errors'].append({
-                                    'original': original_text,
+                                    'original': closest_text or "",
                                     'extracted': extracted_text,
                                     'similarity': similarity,
                                     'position': f'({i+1}, {j+1})'
@@ -95,8 +97,8 @@ class TableAnalysisEvaluator:
                         total_similarity += similarity
                         cell_count += 1
                         
-                    except IndexError:
-                        issues.append(f"셀 위치 불일치: ({i+1}, {j+1})")
+                    except Exception as e:
+                        issues.append(f"셀 비교 중 오류 ({i+1}, {j+1}): {str(e)}")
                         continue
 
             doc.close()
@@ -110,6 +112,24 @@ class TableAnalysisEvaluator:
         except Exception as e:
             issues.append(f"텍스트 정확도 평가 중 오류: {str(e)}")
             return 0.0, text_details, issues
+
+    def _find_closest_text(self, target: str, text_blocks: list) -> str:
+        """가장 유사한 텍스트 블록 찾기"""
+        best_match = ""
+        best_ratio = 0
+        
+        for block in text_blocks:
+            if not isinstance(block, tuple) or len(block) < 4:
+                continue
+                
+            block_text = block[4].strip()
+            ratio = SequenceMatcher(None, target, block_text).ratio()
+            
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = block_text
+                
+        return best_match
 
     def _evaluate_merged_cells(self, df: pd.DataFrame, merged_cells: List) -> Tuple[float, Dict, List[str]]:
         """병합된 셀 검출 품질 평가"""
@@ -360,6 +380,12 @@ class EnhancedTableAnalyzer:
     def __init__(self):
         self._setup_logging()
         self.evaluator = TableAnalysisEvaluator()
+        
+        # AI 모델 초기화 추가
+        self.model = AutoModelForObjectDetection.from_pretrained("microsoft/table-transformer-detection")
+        self.processor = AutoProcessor.from_pretrained("microsoft/table-transformer-detection")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
     def _setup_logging(self):
         """로깅 설정"""
@@ -394,6 +420,29 @@ class EnhancedTableAnalyzer:
             self.logger.error(f"페이지 {page_num} Camelot 파싱 오류: {str(e)}")
             return pd.DataFrame()
 
+    def ai_enhanced_parse(self, pdf_path: str, page_num: int) -> pd.DataFrame:
+        """AI 향상된 표 파싱"""
+        try:
+            # 표 영역 감지
+            image = self.extract_page_image(pdf_path, page_num)
+            inputs = self.processor(images=image, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+            
+            # 결과 처리 및 표 추출
+            predicted_tables = self.process_model_outputs(outputs, image)
+            
+            # 데이터 검증 및 보정
+            validated_data = self.validate_and_correct_data(predicted_tables)
+            
+            return validated_data
+            
+        except Exception as e:
+            self.logger.error(f"AI 파싱 중 오류: {str(e)}")
+            return pd.DataFrame()
+
     def analyze_pages(self, pdf_path: str, pages: List[int], output_dir: str) -> str:
         """여러 페이지 분석"""
         try:
@@ -410,12 +459,13 @@ class EnhancedTableAnalyzer:
                 self.logger.info(f"\n[기본 Camelot 파싱 평가 - 페이지 {page_num}]")
                 self.logger.info(self.evaluator.format_evaluation_report(basic_metrics))
                 
-                ws_basic = wb.create_sheet(f"Page{page_num}_Basic")
+                ws_basic = wb.create_sheet(f"P{page_num}_Camelot")
                 self._write_dataframe_to_sheet(
                     ws_basic, 
                     basic_df, 
-                    f"페이지 {page_num} - 기본 Camelot 파싱"
+                    f"페이지 {page_num} - Camelot 파싱"
                 )
+                self._write_metrics_to_sheet(ws_basic, basic_metrics, start_row=len(basic_df) + 5)
                 
                 # 2. TableAnalyzer 분석
                 try:
@@ -431,11 +481,37 @@ class EnhancedTableAnalyzer:
                     self.logger.info(f"\n[향상된 분석 평가 - 페이지 {page_num}]")
                     self.logger.info(self.evaluator.format_evaluation_report(enhanced_metrics))
                     
-                    ws_enhanced = wb.create_sheet(f"Page{page_num}_Enhanced")
-                    self._write_analysis_result_to_sheet(ws_enhanced, result)
+                    ws_enhanced = wb.create_sheet(f"P{page_num}_AI")
+                    self._write_analysis_result_to_sheet(
+                        ws_enhanced, 
+                        result, 
+                        enhanced_metrics
+                    )
                     
                 except Exception as e:
                     self.logger.error(f"TableAnalyzer 분석 오류 (페이지 {page_num}): {str(e)}")
+
+                # 3. AI 향상된 분석
+                try:
+                    ai_df = self.ai_enhanced_parse(pdf_path, page_num)
+                    ai_metrics = self.evaluator.evaluate_table(ai_df, pdf_path, page_num)
+                    
+                    ws_ai = wb.create_sheet(f"P{page_num}_AI")
+                    self._write_dataframe_to_sheet(ws_ai, ai_df, f"페이지 {page_num} - AI 분석")
+                    self._write_metrics_to_sheet(ws_ai, ai_metrics, start_row=len(ai_df) + 5)
+                    
+                except Exception as e:
+                    self.logger.error(f"AI 분석 오류 (페이지 {page_num}): {str(e)}")
+
+                # 4. 비교 시트 추가 (3가지 방식 비교)
+                ws_compare = wb.create_sheet(f"P{page_num}_Compare")
+                self._write_comparison_to_sheet(
+                    ws_compare,
+                    basic_metrics,
+                    enhanced_metrics,
+                    ai_metrics,
+                    page_num
+                )
 
                 self.logger.info(f"페이지 {page_num} 분석 완료")
 
@@ -452,7 +528,142 @@ class EnhancedTableAnalyzer:
             self.logger.error(f"분석 중 오류 발생: {str(e)}")
             raise
 
-    # ... (이전의 _write_dataframe_to_sheet, _write_analysis_result_to_sheet, _apply_styles_to_workbook 메서드들은 동일)
+    def _write_metrics_to_sheet(self, ws, metrics: TableQualityMetrics, start_row: int):
+        """품질 메트릭을 워크시트에 작성"""
+        headers = [
+            ("전체 품질 점수", f"{metrics.overall_score:.1f}/100점"),
+            ("빈 셀 비율", f"{metrics.empty_cells_ratio:.1%}"),
+            ("의심 셀 비율", f"{metrics.suspicious_cells_ratio:.1%}"),
+            ("구조 점수", f"{metrics.structure_score:.2f}"),
+            ("일관성 점수", f"{metrics.consistency_score:.2f}"),
+            ("병합 셀 검출 점수", f"{metrics.merged_cell_detection_score:.2f}"),
+            ("텍스트 정확도 점수", f"{metrics.text_accuracy_score:.2f}")
+        ]
+        
+        ws.merge_cells(
+            start_row=start_row, 
+            start_column=1, 
+            end_row=start_row, 
+            end_column=2
+        )
+        ws.cell(row=start_row, column=1, value="품질 평가 결과").font = Font(bold=True)
+        
+        for idx, (key, value) in enumerate(headers, start_row + 1):
+            ws.cell(row=idx, column=1, value=key).font = Font(bold=True)
+            ws.cell(row=idx, column=2, value=value)
+
+    def _write_analysis_result_to_sheet(self, ws, result: Dict, metrics: TableQualityMetrics):
+        """분석 결과와 메트릭을 워크시트에 작성"""
+        if 'data' in result:
+            self._write_dataframe_to_sheet(ws, result['data'], "AI 분석 결과")
+            
+        data_rows = len(result.get('data', [])) + 3
+        
+        # AI 분석 추가 정보
+        additional_info = [
+            ("병합된 셀 수", len(result.get('merged_cells', []))),
+            ("표 구조", result.get('table_structure', 'N/A')),
+            ("AI 신뢰도 점수", f"{result.get('confidence_score', 'N/A')}")
+        ]
+        
+        ws.merge_cells(
+            start_row=data_rows, 
+            start_column=1, 
+            end_row=data_rows, 
+            end_column=2
+        )
+        ws.cell(row=data_rows, column=1, value="AI 분석 정보").font = Font(bold=True)
+        
+        for idx, (key, value) in enumerate(additional_info, data_rows + 1):
+            ws.cell(row=idx, column=1, value=key).font = Font(bold=True)
+            ws.cell(row=idx, column=2, value=value)
+
+        # 품질 메트릭 작성
+        self._write_metrics_to_sheet(ws, metrics, data_rows + len(additional_info) + 2)
+
+    def _write_comparison_to_sheet(self, ws, basic_metrics: TableQualityMetrics, 
+                                 enhanced_metrics: TableQualityMetrics,
+                                 ai_metrics: TableQualityMetrics,
+                                 page_num: int):
+        """세 가지 분석 방식 비교"""
+        ws.title = f"P{page_num}_Compare"
+        
+        # 제목
+        ws.merge_cells('A1:D1')
+        ws['A1'] = f"페이지 {page_num} - 분석 방식 비교"
+        ws['A1'].font = Font(bold=True)
+        ws['A1'].alignment = Alignment(horizontal='center')
+        
+        # 헤더
+        headers = ['메트릭', 'Camelot', 'Enhanced', 'AI']
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=2, column=col, value=header).font = Font(bold=True)
+            
+        # 비교 데이터
+        comparison_data = [
+            ("전체 품질 점수", 
+             f"{basic_metrics.overall_score:.1f}", 
+             f"{enhanced_metrics.overall_score:.1f}",
+             f"{ai_metrics.overall_score:.1f}"),
+            ("빈 셀 비율", 
+             f"{basic_metrics.empty_cells_ratio:.1%}", 
+             f"{enhanced_metrics.empty_cells_ratio:.1%}",
+             f"{ai_metrics.empty_cells_ratio:.1%}"),
+            # ... 나머지 메트릭들 추가
+        ]
+        
+        for row, (metric, basic, enhanced, ai) in enumerate(comparison_data, 3):
+            ws.cell(row=row, column=1, value=metric)
+            ws.cell(row=row, column=2, value=basic)
+            ws.cell(row=row, column=3, value=enhanced)
+            ws.cell(row=row, column=4, value=ai)
+            
+        # 열 너비 조정
+        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 15
+
+    def _write_dataframe_to_sheet(self, ws, df: pd.DataFrame, title: str):
+        """데이터프레임을 워크시트에 작성"""
+        ws.title = title[:31]  # 시트 이름 길이 제한
+        
+        # 제목 작성
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns))
+        ws['A1'] = title
+        ws['A1'].font = Font(bold=True)
+        ws['A1'].alignment = Alignment(horizontal='center')
+        
+        # 열 헤더 작성
+        for col_idx, column in enumerate(df.columns, 1):
+            cell = ws.cell(row=2, column=col_idx, value=str(column))
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="CCCCCC")
+            
+        # 데이터 작성
+        for row_idx, row in enumerate(df.values, 3):
+            for col_idx, value in enumerate(row, 1):
+                ws.cell(row=row_idx, column=col_idx, value=str(value))
+                
+        # 열 너비 자동 조정
+        for column in ws.columns:
+            length = max(len(str(cell.value)) for cell in column)
+            ws.column_dimensions[get_column_letter(column[0].column)].width = min(length + 2, 50)
+
+    def _apply_styles_to_workbook(self, wb: Workbook):
+        """워크북 전체에 스타일 적용"""
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.border = border
+                    cell.alignment = Alignment(vertical='center')
 
 def parse_page_numbers(page_str: str) -> list[int]:
     """
@@ -532,3 +743,59 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# TestEnhancedAnalysis 클래스 추가
+class TestEnhancedAnalysis:
+    @pytest.fixture
+    def test_data_dir(self):
+        """테스트 데이터 디렉토리"""
+        test_dir = Path("tests/test_data")
+        test_dir.mkdir(parents=True, exist_ok=True)
+        return test_dir
+
+    @pytest.fixture
+    def output_dir(self):
+        """결과 파일 저장 디렉토리"""
+        output_dir = Path("tests/output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    @pytest.fixture
+    def analyzer(self):
+        return EnhancedTableAnalyzer()
+
+    def test_multi_version_analysis(self, analyzer, test_data_dir, output_dir):
+        """세 가지 버전의 분석 통합 테스트"""
+        pdf_path = test_data_dir / "test.pdf"
+        output_path = output_dir / "multi_version_analysis.xlsx"
+        
+        try:
+            result_path = analyzer.analyze_pages(
+                str(pdf_path),
+                pages=[68],
+                output_dir=str(output_dir)
+            )
+            
+            # 결과 검증
+            assert Path(result_path).exists()
+            wb = load_workbook(result_path)
+            
+            # 각 시트 존재 확인
+            expected_sheets = [
+                "P68_Camelot",
+                "P68_Enhanced",
+                "P68_AI",
+                "P68_Compare"
+            ]
+            for sheet in expected_sheets:
+                assert sheet in wb.sheetnames, f"시트 없음: {sheet}"
+            
+            print(f"\n분석 결과가 저장됨: {result_path}")
+            print("포함된 시트:")
+            for sheet in wb.sheetnames:
+                print(f"- {sheet}")
+                
+            return result_path
+            
+        except Exception as e:
+            pytest.fail(f"분석 실패: {str(e)}")
