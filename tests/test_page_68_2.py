@@ -454,6 +454,54 @@ class EnhancedTableAnalyzer:
 
     # ... (이전의 _write_dataframe_to_sheet, _write_analysis_result_to_sheet, _apply_styles_to_workbook 메서드들은 동일)
 
+def parse_page_numbers(page_str: str) -> list[int]:
+    """
+    페이지 범위 문자열을 파싱하여 실제 페이지 번호 리스트 반환
+    
+    예시:
+    "1,3-5,7" -> [1, 3, 4, 5, 7]
+    "1-3,5,7-9" -> [1, 2, 3, 5, 7, 8, 9]
+    
+    Args:
+        page_str: 페이지 범위 문자열 (예: "1,3-5,7")
+        
+    Returns:
+        정수 리스트로 변환된 페이지 번호들
+        
+    Raises:
+        ValueError: 잘못된 형식의 입력일 경우
+    """
+    pages = set()
+    
+    try:
+        # 콤마로 구분된 각 부분 처리
+        for part in page_str.strip().split(','):
+            if '-' in part:
+                # 범위 처리 (예: "3-5")
+                start, end = map(int, part.split('-'))
+                if start > end:
+                    raise ValueError(f"잘못된 범위: {start}-{end}")
+                pages.update(range(start, end + 1))
+            else:
+                # 단일 페이지 처리
+                pages.add(int(part))
+                
+        # 정렬된 리스트로 변환
+        result = sorted(list(pages))
+        
+        # 유효성 검사
+        if not result:
+            raise ValueError("페이지 번호가 지정되지 않았습니다")
+        if any(p < 1 for p in result):
+            raise ValueError("페이지 번호는 1 이상이어야 합니다")
+            
+        return result
+        
+    except ValueError as e:
+        raise ValueError(f"페이지 범위 파싱 오류: {str(e)}")
+    except Exception as e:
+        raise ValueError(f"잘못된 페이지 범위 형식입니다: {str(e)}")
+
 def main():
     parser = argparse.ArgumentParser(description='PDF 표 분석기')
     parser.add_argument('pdf_path', help='PDF 파일 경로')
