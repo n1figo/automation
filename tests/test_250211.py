@@ -1,5 +1,6 @@
 import re
 import PyPDF2
+import camelot  # 추가: Camelot 라이브러리
 
 file_path = "/workspaces/automation/data/input/0211/KB Yes!365 건강보험(세만기)(무배당)(25.01)_0214_요약서_v1.1.pdf"
 
@@ -42,5 +43,13 @@ with open(file_path, "rb") as pdf_file:
         for term, pages in results.items():
             if pages:
                 print(f"Term '{term}' found on page(s): {pages}")
+                # 각 페이지에서 lattice 모드를 사용하여 표 추출
+                for page in pages:
+                    print(f"Extracting tables for term '{term}' on page {page}:")
+                    tables = camelot.read_pdf(file_path, pages=str(page), flavor="lattice")
+                    for idx, table in enumerate(tables):
+                        print(f"Table {idx + 1} from page {page}:")
+                        print(table.df)
+                        print("-" * 80)
             else:
                 print(f"Term '{term}' not found in subsequent pages.")
