@@ -19,7 +19,6 @@ def normalize(text):
 
 def is_header_row(row, header=["보장명", "지급사유", "지급금액"]):
     try:
-        # 행의 열 개수에 따라 비교 대상 결정: 4개 이상이면 인덱스 1~3, 3개이면 인덱스 0~2 사용
         if len(row) >= 4:
             cells = [normalize(row[i]) for i in range(1, 4)]
         elif len(row) == 3:
@@ -44,20 +43,29 @@ def drop_redundant_header(df, header=["보장명", "지급사유", "지급금액
 
 def page_has_highlight(doc, page_no):
     """
-    PyMuPDF를 사용하여 페이지에 하이라이트 annotation이 있는지 체크합니다.
-    annotation이 존재하고, 그 유형이 하이라이트(일반적으로 type id 8)인 경우 True를 반환합니다.
+    PyMuPDF로 페이지에 하이라이트 annotation이 있는지 체크합니다.
+    타입 id 8이 하이라이트를 의미합니다.
     """
     page = doc.load_page(page_no)
     annots = page.annots()
     if annots:
         for annot in annots:
             try:
-                # annot.type는 tuple 형태로 (type_value, type_name)으로 제공됩니다.
                 if annot.type[0] == 8:
                     return True
             except Exception as ex:
                 print(f"[ERROR] Annotation error: {ex}")
     return False
+
+def get_page_footer(doc, page_no):
+    """
+    주어진 페이지(0-indexed)의 하단 텍스트(페이지번호 등)를 추출합니다.
+    페이지 텍스트의 마지막 non-empty 라인을 반환합니다.
+    """
+    page = doc.load_page(page_no)
+    text = page.get_text("text")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 def main():
     # 1. PyPDF2로 PDF 전체 읽기
@@ -66,7 +74,7 @@ def main():
         total_pages = len(reader.pages)
         start_page = None
 
-        # "나. 보험금"을 포함하는 첫 페이지 찾기
+        # "나. 보험금" 포함 첫 페이지 검색
         for i, page in enumerate(reader.pages):
             text = page.extract_text()
             if text and normalize(search_term_initial) in normalize(text):
@@ -78,7 +86,7 @@ def main():
             print(f"Initial term '{search_term_initial}' not found.")
             return
 
-        # 2. 초기 페이지 이후부터 각 섹션에 해당하는 페이지 번호 찾기
+        # 2. 초기 페이지 이후부터 각 섹션에 해당하는 페이지 번호 검색
         results = {term: [] for term in search_terms}
         for i in range(start_page + 1, total_pages):
             page = reader.pages[i]
@@ -87,20 +95,20 @@ def main():
                 normalized_text = normalize(text)
                 for term in search_terms:
                     if normalize(term) in normalized_text:
-                        results[term].append(i + 1)   # 페이지 번호: 1-indexed
+                        results[term].append(i + 1)  # 1-indexed
 
     # 3. 하이라이트 인식 범위 결정: "나. 보험금" 페이지부터 "상해및질병관련특별약관" 마지막 페이지까지
-    highlight_end_page = total_pages  # 기본적으로 전체 페이지
+    highlight_end_page = total_pages  # 기본값: 전체 페이지
     if results["상해및질병관련특별약관"]:
         highlight_end_page = max(results["상해및질병관련특별약관"])
     print(f"Highlight detection range: from page {start_page+1} to page {highlight_end_page}")
 
-    # 4. PyMuPDF로 지정 범위 내에서 하이라이트(또는 색깔 글씨) annotation이 있는 페이지와 그 전후 페이지 찾기
+    # 4. PyMuPDF로 지정 범위 내에서 하이라이트(또는 색깔 글씨) annotation이 있는 페이지와 그 전후 페이지 검색
     doc = fitz.open(file_path)
     highlight_pages = set()
     for i in range(start_page, highlight_end_page):
         if page_has_highlight(doc, i):
-            highlight_pages.add(i)  # 현재 페이지
+            highlight_pages.add(i)
             if i - 1 >= start_page:
                 highlight_pages.add(i - 1)
             if i + 1 < highlight_end_page:
@@ -112,9 +120,13 @@ def main():
     else:
         print("No highlight annotations found within the specified range.")
 
-    # 5. 각 특별약관별로 표 추출 후 Excel 시트에 저장 (기존 방식)
+    # 5. 각 섹션별로 표 추출 후 Excel 시트에 저장
+    # 여기서 각 표의 추출된 페이지 하단에서 페이지 번호(출처)를 추가할 예정입니다.
     output_file = "/workspaces/automation/tests/test_data/output/extracted_tables.xlsx"
     writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
+
+    # PDF 페이지의 하단 텍스트(페이지번호)를 파싱하기 위한 PyMuPDF 객체 (doc_footer는 여러 번 재사용)
+    doc_footer = fitz.open(file_path)
 
     for term, pages in results.items():
         if pages:
@@ -127,10 +139,15 @@ def main():
             for idx, table in enumerate(tables):
                 suffix = f" - P{pages_str}T{idx+1}"
                 table_df = table.df.copy()
-                print(f"[DEBUG] Original table df from pages {pages_str} table {idx+1}:")
+                # table.page는 Camelot에서 추출한 표의 원본 페이지(1-indexed)
+                table_page = table.page
+                footer_text = get_page_footer(doc_footer, table_page - 1)
+                # "출처" 컬럼은 기존 소스 정보와 함께, "출처 페이지" 컬럼에는 PDF 하단의 페이지 번호를 추가합니다.
+                table_df.insert(0, "출처 페이지", footer_text)
+                table_df.insert(0, "Source", term + suffix)
+                print(f"[DEBUG] Extracted table from page {table_page} with footer '{footer_text}':")
                 print(table_df)
                 table_df = drop_redundant_header(table_df)
-                table_df.insert(0, "Source", term + suffix)
                 combined_df = pd.concat([combined_df, table_df], ignore_index=True)
                 print(f"Table {idx+1} from pages {pages_str} extracted.")
 
