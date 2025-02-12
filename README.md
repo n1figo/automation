@@ -1,6 +1,8 @@
 # automation
 상품개정자동화_v2
 
+python -m unittest tests/test_pdf_processor.py
+
 
 # main(또는 master) 브랜치에서 새 feature branch 생성
 git checkout -b feature/color-formatting

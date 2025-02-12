@@ -226,6 +226,14 @@ class TestPDFProcessor(unittest.TestCase):
             test_pdf_path = os.path.join(self.test_dir, "process_test.pdf")
             doc.save(test_pdf_path)
             doc.close()
+
+            # **[추가] PyPDF2 로 텍스트 추출 및 확인**
+            with open(test_pdf_path, "rb") as f:
+                pdf_reader_test = PyPDF2.PdfReader(f)
+                test_page_text = pdf_reader_test.pages[0].extract_text()
+                normalized_test_text = self.processor.normalize_text(test_page_text)
+                print(f"\n[테스트 PDF 텍스트 (PyPDF2 추출, 정규화):] '{normalized_test_text}'") # 텍스트 출력
+                self.assertIn(self.processor.normalize_text("나. 보험금"), normalized_test_text) # assertIn 으로 변경
             
             # 새로운 PDF로 프로세서 초기화
             test_processor = PDFProcessor(test_pdf_path)
@@ -253,3 +261,6 @@ class TestPDFProcessor(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+# 테스트 실행 명령어
+# python -m unittest tests/test_pdf_processor.py
