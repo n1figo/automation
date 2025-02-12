@@ -13,7 +13,7 @@ class TestPDFProcessor(unittest.TestCase):
 
     def setUp(self):
         """테스트 셋업: dummy_pdf 파일 생성 및 PDFProcessor 인스턴스 초기화"""
-        self.dummy_pdf_path = "dummy_pdf.pdf"
+        self.dummy_pdf_path = "/workspaces/automation/tests/test_data/KB Yes!365 건강보험(세만기)(무배당)(25.01)_0214_요약서_v1.1.pdf"
         if not os.path.exists(self.dummy_pdf_path):
             with fitz.open() as pdf_doc:
                 page = pdf_doc.new_page()
