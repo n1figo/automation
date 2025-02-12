@@ -8,15 +8,17 @@ import fitz
 import logging
 import unittest
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from transformers import AutoModelForCausalLM, AutoTokenizer # transformers 라이브러리 관련 import 추가
 
 # Streamlit UI 관련 라이브러리 (UI 개발 시 활성화)
 # import streamlit as st
 
 # 설정 변수 (config.ini 또는 config.yaml 파일로 관리하는 것이 이상적)
-MODEL_PATH = "/workspaces/automation/models/llama2-quantized.bin"
-MODEL_URL = "https://example.com/path/to/llama2-quantized.bin"  # 실제 모델 URL로 교체
+MODEL_PATH_MISTRAL = "/workspaces/automation/models/mistral-7b" # 미스트랄 모델 저장 경로 변경
+MODEL_URL_MISTRAL = "" # 미스트랄 모델은 Hugging Face Hub에서 직접 다운로드하므로 URL 불필요
+MODEL_NAME_MISTRAL = "mistralai/Mistral-7B-v0.1" # Hugging Face Hub 모델 이름
 INPUT_PDF_PATH = "/workspaces/automation/data/input/0211/KB Yes!365 건강보험(세만기)(무배당)(25.01)_0214_요약서_v1.1.pdf"
-OUTPUT_EXCEL_PATH = "/workspaces/automation/tests/test_data/output/extracted_tables.xlsx"
+OUTPUT_EXCEL_PATH = "/workspaces/automation/tests/test_data/output/extracted_tables_mistral.xlsx" # 출력 파일명 변경 (Llama 2와 구분)
 SEARCH_TERM_INITIAL = "나. 보험금"
 SEARCH_TERMS = [
     "상해관련 특별약관",
@@ -31,36 +33,42 @@ MAX_CHUNK_SIZE = 2000
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 모델 다운로드 및 로드 (LLM 관련 기능 활성화 시 사용)
-def load_llm_model(model_path, model_url):
-    """LLM 모델을 로드하거나 다운로드합니다."""
+def load_llm_model(model_path, model_url, model_name="mistralai/Mistral-7B-v0.1"):
+    """LLM 모델을 로드하거나 다운로드합니다. (Mistral 모델 지원)"""
     if not os.path.exists(model_path):
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        logging.info(f"Downloading model from {model_url} to {model_path} ...")
+        logging.info(f"Downloading model from Hugging Face Hub: {model_name} to {model_path} ...")
         try:
-            response = requests.get(model_url, stream=True)
-            response.raise_for_status()  # HTTP 에러 발생 시 예외 처리
-            with open(model_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            logging.info("Model download complete.")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"모델 다운로드 실패: {e}")
-            return None
-    try:
-        from langchain.llms import LlamaCpp
-        llm = LlamaCpp(
-            model_path=model_path,
-            n_ctx=LLM_CONTEXT_SIZE,
-            n_threads=LLM_THREADS
-        )
-        logging.info("LLM 모델 로드 성공.")
-        return llm
-    except Exception as e:
-        logging.error(f"LLM 로드 실패, Llama 모델을 확인하세요: {e}")
-        return None
+            # Hugging Face Transformers를 사용하여 모델 직접 다운로드 및 저장 (모델 파일 직접 다운로드 방식)
+            tokenizer = AutoTokenizer.from_pretrained(model_name) # 토크나이저 먼저 다운로드
+            model = AutoModelForCausalLM.from_pretrained(model_name) # 모델 다운로드
+            tokenizer.save_pretrained(model_path) # 토크나이저 저장
+            model.save_pretrained(model_path) # 모델 저장
 
-llm = load_llm_model(MODEL_PATH, MODEL_URL) # LLM 모델 로드
+            logging.info("Model download complete.")
+        except requests.exceptions.RequestException as e: # requests 에러 예외 처리 추가 (requests 관련 에러만 catch)
+            logging.error(f"모델 다운로드 실패 (Hugging Face Hub): {e}")
+            return None
+        except Exception as e: # transformers 관련 에러 및 기타 예외 처리
+            logging.error(f"모델 로드 실패 (Transformers): {e}")
+            return None
+
+    try:
+        # 로컬에 저장된 모델 로드 (transformers 사용)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForCausalLM.from_pretrained(model_path)
+        logging.info("Mistral 모델 로드 성공 (Transformers).")
+        return model, tokenizer # 모델과 토크나이저 함께 반환
+    except Exception as e:
+        logging.error(f"Mistral 모델 로드 실패 (Transformers): {e}")
+        return None, None # 모델, 토크나이저 로드 실패 시 None, None 반환
+
+
+llm_mistral, tokenizer_mistral = load_llm_model(MODEL_PATH_MISTRAL, MODEL_URL_MISTRAL, MODEL_NAME_MISTRAL) # 모델 로드 및 토크나이저 저장
+if llm_mistral: # 모델 로드 성공 시에만 다음 단계 진행
+    print("Mistral 모델 로드 완료!")
+else:
+    print("Mistral 모델 로드 실패!")
 
 class PDFProcessor:
     """PDF 문서 처리 및 분석을 위한 클래스"""
@@ -162,22 +170,24 @@ class PDFProcessor:
             chunks.append(' '.join(current_chunk))
         return chunks
 
-    def find_section_ranges(self, llm, start_page, end_page, sections):
-        """LLM을 사용하여 섹션 범위 식별"""
+    def find_section_ranges(self, llm, tokenizer, doc, start_page, end_page, sections):
+        """
+        LLM (Mistral)을 사용하여 각 섹션의 시작과 끝 페이지를 찾습니다.
+        """
         section_ranges = {}
-        if llm is None:
-            logging.warning("LLM 모델이 로드되지 않았습니다. 섹션 범위 식별 기능을 사용할 수 없습니다.")
-            return section_ranges # LLM이 없을 경우 빈 딕셔너리 반환
+        if llm is None or tokenizer is None: # 모델 또는 토크나이저 None 체크 추가
+            logging.warning("LLM 모델 또는 토크나이저가 로드되지 않았습니다. 섹션 범위 식별 기능을 사용할 수 없습니다.")
+            return section_ranges # LLM 또는 토크나이저 없을 경우 빈 딕셔너리 반환
 
         for section in sections:
             section_found = False
             for page_num in range(start_page, end_page + 1):
-                page = self.doc.load_page(page_num)
+                page = doc.load_page(page_num)
                 text = page.get_text("text")
                 chunks = self.split_text_into_chunks(text)
 
                 for chunk in chunks:
-                    prompt = f"""
+                    prompt_text = f"""
                     이 텍스트에서 '{section}'이 시작되거나 끝나는지 확인해주세요:
 
                     {chunk}
@@ -188,12 +198,16 @@ class PDFProcessor:
                     - 해당없음
                     """
                     try:
-                        response = llm(prompt)
-                        if "시작" in response.lower():
+                        # transformers 파이프라인 대신 직접 추론 코드 사용
+                        input_ids = tokenizer.encode(prompt_text, return_tensors="pt") # 텍스트 토큰화
+                        output = llm.generate(input_ids, max_length=50, num_return_sequences=1) # 텍스트 생성 (추론)
+                        response_text = tokenizer.decode(output[0], skip_special_tokens=True) # 생성된 텍스트 디코딩
+
+                        if "시작" in response_text.lower():
                             if section not in section_ranges:
                                 section_ranges[section] = {"start": page_num + 1}
                                 section_found = True
-                        elif "끝" in response.lower() and section_found:
+                        elif "끝" in response_text.lower() and section_found:
                             section_ranges[section]["end"] = page_num + 1
                     except Exception as e:
                         logging.error(f"[ERROR] LLM 처리 중 오류 발생: {e}")
@@ -241,7 +255,7 @@ class PDFProcessor:
         return combined_df
 
 
-    def process_pdf(self, llm, search_terms, output_file):
+    def process_pdf(self, llm, tokenizer, search_terms, output_file): # 토크나이저 파라미터 추가
         """PDF 처리 메인 함수"""
         if self.doc is None or self.pdf_reader is None:
             logging.error("PDF 문서가 로드되지 않았습니다. open_pdf_document()를 먼저 호출하세요.")
@@ -259,11 +273,11 @@ class PDFProcessor:
                 break
 
         if start_page is None:
-            logging.warning(f"'{SEARCH_TERM_INITIAL}' 용어 발견 실패.") # 경고 로그
+            logging.warning(f"'{SEARCH_term_initial}' 용어 발견 실패.") # 경고 로그
             return
 
-        # 2. LLM으로 섹션 범위 찾기
-        section_ranges = self.find_section_ranges(llm, start_page, total_pages - 1, search_terms)
+        # 2. LLM으로 섹션 범위 찾기 (Mistral 모델 사용)
+        section_ranges = self.find_section_ranges(llm, tokenizer, doc, start_page, total_pages - 1, search_terms) # 토크나이저 전달
 
         # 섹션 범위 출력 (로그 레벨 INFO)
         logging.info("\n=== 섹션별 페이지 범위 ===")
@@ -321,10 +335,10 @@ def main():
     pdf_processor = PDFProcessor(INPUT_PDF_PATH)
     pdf_processor.open_pdf_document()
 
-    if pdf_processor.doc and pdf_processor.pdf_reader: # PDF 문서 로드 성공 시에만 처리 진행
-        pdf_processor.process_pdf(llm, SEARCH_TERMS, OUTPUT_EXCEL_PATH)
+    if pdf_processor.doc and pdf_processor.pdf_reader and llm_mistral and tokenizer_mistral: # 모델, 토크나이저 로드 성공 여부 체크 추가
+        pdf_processor.process_pdf(llm_mistral, tokenizer_mistral, SEARCH_TERMS, OUTPUT_EXCEL_PATH) # 모델, 토크나이저 전달
     else:
-        logging.error("PDF 문서 로드 실패, 프로그램 종료.") # 에러 로그
+        logging.error("PDF 문서 또는 Mistral 모델 로드 실패, 프로그램 종료.") # 에러 로그
 
     logging.info("PDF 약관 분석 자동화 완료") # 완료 로그
 
@@ -343,9 +357,9 @@ def main():
 #             with st.spinner("PDF 분석 중..."):
 #                 pdf_processor_streamlit = PDFProcessor(file_path_streamlit)
 #                 pdf_processor_streamlit.open_pdf_document()
-#                 if pdf_processor_streamlit.doc and pdf_processor_streamlit.pdf_reader:
-#                     output_excel_streamlit_path = "/tmp/extracted_tables_streamlit.xlsx" # 임시 출력 경로
-#                     pdf_processor_streamlit.process_pdf(llm, SEARCH_TERMS, output_excel_streamlit_path)
+#                 if pdf_processor_streamlit.doc and pdf_processor_streamlit.pdf_reader and llm_mistral and tokenizer_mistral:
+#                     output_excel_streamlit_path = "/tmp/extracted_tables_streamlit_mistral.xlsx" # 임시 출력 경로 (파일명 변경)
+#                     pdf_processor_streamlit.process_pdf(llm_mistral, tokenizer_mistral, SEARCH_TERMS, output_excel_streamlit_path)
 #                     st.success(f"Excel 파일 생성 완료: {output_excel_streamlit_path}")
 #
 #                     # 엑셀 파일 다운로드 버튼 (선택 사항)
@@ -363,5 +377,4 @@ def main():
 if __name__ == "__main__":
     main() # CLI 실행 (UI 개발 시 streamlit_app()으로 변경)
     # streamlit_app() # Streamlit UI 실행 (UI 개발 환경에서 활성화)
-
 
