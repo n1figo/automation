@@ -1,33 +1,15 @@
-# from setuptools import setup, find_packages
-
-# setup(
-#     name="pdf_analyzer",
-#     version="0.1.0",
-#     package_dir={"": "src"},
-#     packages=find_packages(where="src"),
-#     python_requires=">=3.8",
-#     install_requires=[
-#         "pandas",
-#         "numpy",
-#         "camelot-py[cv]",
-#         "pdfplumber",
-#         "pycryptodome",  # pycrypto 대신 pycryptodome 사용
-#         "llama-cpp-python",
-#         "groq",
-#     ],
-#     extras_require={
-#         "test": [
-#             "pytest",
-#             "pytest-asyncio",
-#         ],
-#     },
-# )
-
+# setup.py
 from setuptools import setup, find_packages
 
 setup(
-    name="table_analyzer",
-    version="0.1",
+    name="pdf-processor",
+    version="0.1.0",
     packages=find_packages(),
-    package_dir={'': 'src'}
+    install_requires=[
+        "PyMuPDF",
+        "PyPDF2",
+        "camelot-py",
+        "pandas",
+        "llama-cpp-python",
+    ],
 )
