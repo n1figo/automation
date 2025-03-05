@@ -742,24 +742,291 @@ class PDFAnalyzer:
     
 
     def find_payment_section(self) -> Optional[int]:
-        """보험금 지급 섹션의 시작 페이지 찾기"""
-        payment_patterns = [
-            r'나.?\s*보험금\s*'
+        """보험금 지급 섹션의 시작 페이지 찾기 - 개선된 버전"""
+        # 다양한 패턴 정의
+        patterns = [
+            r'나\.\s*보험금\s*지급',
+            r'나\.\s*보험금',
+            r'[nN][aA]\.\s*보험금',  # OCR 오류 대응
+            r'제\d+조\s*보험금의*\s*지급'  # 대체 형식
         ]
+        
+        # 처음 20페이지만 검색 (일반적으로 앞부분에 위치)
+        search_pages = min(20, len(self.doc))
         
         self.logger.info("보험금 지급 섹션 검색 시작")
         
-        for page_num in range(len(self.doc)):
+        for page_num in range(search_pages):
             text = self.doc[page_num].get_text()
-            for pattern in payment_patterns:
-                if re.search(pattern, text, re.IGNORECASE):
-                    self.logger.info(f"보험금 지급 섹션 발견: {page_num + 1}페이지")
+            for pattern in patterns:
+                if re.search(pattern, text):
+                    self.logger.info(f"보험금 지급 섹션 발견: {page_num + 1}페이지, 패턴: {pattern}")
                     return page_num
-                    
-        # 섹션을 찾지 못한 경우 첫 페이지부터 시작
-        self.logger.warning("보험금 지급 섹션을 찾지 못해 첫 페이지부터 시작합니다.")
-        return 0
+        
+        # 패턴 미발견 시 텍스트 내용 기반 휴리스틱 검색
+        for page_num in range(search_pages):
+            text = self.doc[page_num].get_text()
+            if "보험금" in text and any(keyword in text for keyword in ["지급", "약정", "청구"]):
+                self.logger.warning(f"휴리스틱 검색으로 보험금 섹션 발견: {page_num + 1}페이지")
+                return page_num
+        
+        self.logger.error("보험금 지급 섹션을 찾을 수 없습니다")
+        return None
     
+    def find_section_candidates(self, start_page):
+        """섹션 후보 범위 생성 - 정확도 향상 버전"""
+        candidates = []
+        
+        # 여러 패턴 정의
+        section_start_patterns = [
+            r'[◇◆■□▶]\s*상해\s*및\s*질병\s*관련\s*특별약관',
+            r'상해\s*및\s*질병\s*관련\s*특별약관',
+            r'상해및질병관련\s*특약'
+        ]
+        
+        # 섹션 종료 패턴
+        section_end_patterns = [
+            r'[◇◆■□▶]\s*([ㄱ-ㅎ가-힣]+)\s*특별약관',  # 다른 특별약관 시작
+            r'제\d+장\s+[ㄱ-ㅎ가-힣]+',                # 새로운 장 시작
+            r'별표\s*\d+',                            # 별표 섹션
+            r'(신체부위|질병)분류표',                   # 분류표 시작
+            r'주요\s*보험\s*용어\s*해설'               # 용어 해설 섹션
+        ]
+        
+        # 주요 특약 키워드 - 섹션 내용 확인용
+        content_keywords = [
+            "암진단금", "입원비", "수술비", "치료비", "일당", "진단비", 
+            "상해", "질병", "사망", "장해", "특약"
+        ]
+        
+        # 섹션 시작 찾기
+        section_start = None
+        for page_num in range(start_page, min(start_page + 50, len(self.doc))):
+            text = self.doc[page_num].get_text()
+            
+            # 섹션 시작 패턴 검색
+            for pattern in section_start_patterns:
+                if re.search(pattern, text):
+                    self.logger.info(f"상해및질병관련특별약관 섹션 시작 발견: {page_num + 1}페이지")
+                    section_start = page_num
+                    break
+            
+            if section_start is not None:
+                break
+        
+        # 섹션 시작을 찾지 못한 경우 None 반환
+        if section_start is None:
+            self.logger.warning("상해및질병관련특별약관 섹션을 찾을 수 없습니다")
+            return candidates
+        
+        # 섹션 종료 찾기
+        for end_page in range(section_start + 1, min(section_start + 100, len(self.doc))):
+            text = self.doc[end_page].get_text()
+            
+            # 섹션 종료 패턴 검색
+            for pattern in section_end_patterns:
+                if re.search(pattern, text):
+                    # 키워드 기반 검증
+                    if any(keyword in text for keyword in content_keywords):
+                        continue  # 내용 관련 키워드가 있으면 아직 섹션 내부로 간주
+                    
+                    self.logger.info(f"상해및질병관련특별약관 섹션 종료 후보: {end_page + 1}페이지")
+                    candidates.append({
+                        "start": section_start,
+                        "end": end_page,
+                        "confidence": "medium",
+                        "reason": f"종료 패턴 발견: {pattern}"
+                    })
+        
+        # 종료 후보를 찾지 못한 경우, 고정 오프셋 사용
+        if not candidates:
+            end_page = min(section_start + 30, len(self.doc) - 1)
+            self.logger.warning(f"종료 후보를 찾지 못해 기본값 사용: {end_page + 1}페이지")
+            candidates.append({
+                "start": section_start,
+                "end": end_page,
+                "confidence": "low",
+                "reason": "기본 오프셋 사용"
+            })
+        
+        # 후보 정렬 (신뢰도 기준)
+        candidates.sort(key=lambda x: {"high": 3, "medium": 2, "low": 1}.get(x["confidence"], 0), reverse=True)
+        
+        return candidates
+
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
+        
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
+        
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",  # 또는 다른 적절한 모델
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "start_page" in result and "end_page" in result:
+                # 페이지 번호를 0-인덱스로 변환 (1부터 시작하는 페이지 번호를 받았으므로)
+                validated_start = max(0, result["start_page"] - 1)
+                validated_end = min(len(self.doc) - 1, result["end_page"] - 1)
+                
+                # 범위 검증
+                if validated_start <= validated_end:
+                    return {
+                        "start": validated_start,
+                        "end": validated_end,
+                        "confidence": "high" if result["is_appropriate"] else "medium",
+                        "reason": result.get("reasoning", "LLM 검증 완료")
+                    }
+            
+            # 검증에 실패한 경우 원본 후보 반환
+            self.logger.warning("LLM 검증 결과가 유효하지 않아 원본 후보를 사용합니다")
+            return candidate
+            
+        except Exception as e:
+            self.logger.error(f"LLM 검증 중 오류: {str(e)}")
+            return candidate
+
+    def verify_payment_section_with_llm(self, candidate_page):
+        """보험금 지급 섹션 LLM 검증"""
+        # 후보 페이지와 주변 페이지 샘플링
+        sample_pages = [
+            max(0, candidate_page - 1),
+            candidate_page,
+            min(candidate_page + 1, len(self.doc) - 1)
+        ]
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            if len(text) > 1000:
+                sample_text = f"{text[:800]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '보험금 지급' 섹션의 시작 페이지를 확인해주세요.
+            
+            후보 페이지: {candidate_page + 1}페이지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 페이지가 '보험금 지급' 섹션의 적절한 시작 페이지인가요?
+            2. 만약 아니라면, 어느 페이지가 더 적절한가요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "page": 적절한 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"보험금 지급 섹션 LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "page" in result:
+                # 적절한 페이지 번호 계산 (0-인덱스)
+                validated_page = max(0, min(len(self.doc) - 1, result["page"] - 1))
+                
+                if not result["is_appropriate"]:
+                    self.logger.info(f"LLM 검증으로 보험금 지급 섹션 페이지 변경: {candidate_page + 1} -> {validated_page + 1}")
+                    return validated_page
+            
+            # 검증에 실패하거나 적절한 경우 원본 페이지 반환
+            return candidate_page
+            
+        except Exception as e:
+            self.logger.error(f"보험금 지급 섹션 LLM 검증 중 오류: {str(e)}")
+            return candidate_page
 
     def _analyze_pdf_structure(self):
         """PDF 구조 상세 분석"""
@@ -1147,5 +1414,2867 @@ class PDFAnalyzer:
         return colored_areas
     
     
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
         
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
         
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",  # 또는 다른 적절한 모델
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "start_page" in result and "end_page" in result:
+                # 페이지 번호를 0-인덱스로 변환 (1부터 시작하는 페이지 번호를 받았으므로)
+                validated_start = max(0, result["start_page"] - 1)
+                validated_end = min(len(self.doc) - 1, result["end_page"] - 1)
+                
+                # 범위 검증
+                if validated_start <= validated_end:
+                    return {
+                        "start": validated_start,
+                        "end": validated_end,
+                        "confidence": "high" if result["is_appropriate"] else "medium",
+                        "reason": result.get("reasoning", "LLM 검증 완료")
+                    }
+            
+            # 검증에 실패한 경우 원본 후보 반환
+            self.logger.warning("LLM 검증 결과가 유효하지 않아 원본 후보를 사용합니다")
+            return candidate
+            
+        except Exception as e:
+            self.logger.error(f"LLM 검증 중 오류: {str(e)}")
+            return candidate
+
+    def verify_payment_section_with_llm(self, candidate_page):
+        """보험금 지급 섹션 LLM 검증"""
+        # 후보 페이지와 주변 페이지 샘플링
+        sample_pages = [
+            max(0, candidate_page - 1),
+            candidate_page,
+            min(candidate_page + 1, len(self.doc) - 1)
+        ]
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            if len(text) > 1000:
+                sample_text = f"{text[:800]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '보험금 지급' 섹션의 시작 페이지를 확인해주세요.
+            
+            후보 페이지: {candidate_page + 1}페이지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 페이지가 '보험금 지급' 섹션의 적절한 시작 페이지인가요?
+            2. 만약 아니라면, 어느 페이지가 더 적절한가요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "page": 적절한 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"보험금 지급 섹션 LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "page" in result:
+                # 적절한 페이지 번호 계산 (0-인덱스)
+                validated_page = max(0, min(len(self.doc) - 1, result["page"] - 1))
+                
+                if not result["is_appropriate"]:
+                    self.logger.info(f"LLM 검증으로 보험금 지급 섹션 페이지 변경: {candidate_page + 1} -> {validated_page + 1}")
+                    return validated_page
+            
+            # 검증에 실패하거나 적절한 경우 원본 페이지 반환
+            return candidate_page
+            
+        except Exception as e:
+            self.logger.error(f"보험금 지급 섹션 LLM 검증 중 오류: {str(e)}")
+            return candidate_page
+
+    def _analyze_pdf_structure(self):
+        """PDF 구조 상세 분석"""
+        print("\n=== PDF 구조 분석 ===")
+        self.logger.info("PDF 구조 분석 시작")
+        
+        for page_num in range(len(self.doc)):
+            page = self.doc[page_num]
+            
+            # 페이지의 블록 정보 추출
+            try:
+                blocks = page.get_text("dict")['blocks']
+                
+                print(f"\n페이지 {page_num + 1} - 블록 수: {len(blocks)}")
+                self.logger.info(f"페이지 {page_num + 1} 블록 분석")
+                
+                for block_index, block in enumerate(blocks, 1):
+                    if block['type'] == 0:  # 텍스트 블록
+                        block_text = ''
+                        for line in block['lines']:
+                            line_text = ''.join([span['text'] for span in line['spans']])
+                            block_text += line_text + '\n'
+                        
+                        # 블록 길이가 너무 길면 자르기
+                        block_text = block_text[:500] + '...' if len(block_text) > 500 else block_text
+                        
+                        print(f"  블록 {block_index}:")
+                        print(f"  내용 (일부): {block_text}")
+            
+            except Exception as e:
+                print(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+                self.logger.error(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+
+
+    def analyze(self) -> dict:
+        """PDF 분석 실행"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result = {'clean': '', 'table_count': 0}
+        
+        try:
+            ranges = self.determine_parsing_ranges()
+            if not ranges:
+                return result
+
+            all_tables = []
+            all_highlights = []
+            all_changes = []
+            
+            for parsing_range in ranges:
+                tables = self.extract_tables(parsing_range)
+                for table in tables:
+                    page_num = parsing_range.start_page
+                    page = self.doc[page_num]
+                    
+                    # 표 처리 및 하이라이트 정보 추출
+                    processed_df, highlights = self.process_table(table, page)
+                    
+                    # 변경 유형 감지
+                    changes = []
+                    for row_highlights in highlights:
+                        row_changes = []
+                        for is_highlighted in row_highlights:
+                            if is_highlighted:
+                                # 여기서 변경 유형 판별 로직 추가 가능
+                                # 예: 색상이나 다른 특징으로 added/deleted/modified 판별
+                                row_changes.append('modified')
+                            else:
+                                row_changes.append('')
+                        changes.append(row_changes)
+                    
+                    # 메타데이터 추가
+                    processed_df = self._add_metadata(processed_df, page_num, parsing_range)
+                    
+                    all_tables.append(processed_df)
+                    all_highlights.append(highlights)
+                    all_changes.append(changes)
+
+            if all_tables:
+                # ExcelWriter를 사용하여 결과 저장
+                output_path = self.output_dir / f"보험약관분석_{timestamp}.xlsx"
+                excel_writer = ExcelWriter(str(output_path))
+                
+                # 섹션별로 데이터 작성
+                current_section = None
+                for idx, (df, highlights, changes) in enumerate(zip(all_tables, all_highlights, all_changes)):
+                    # 섹션 변경 확인
+                    section = df['구분'].iloc[0] if '구분' in df.columns else f'Section_{idx+1}'
+                    if section != current_section:
+                        excel_writer.write_section_header(section)
+                        current_section = section
+                    
+                    # 메타데이터 준비
+                    metadata = {
+                        '페이지': df['페이지'].iloc[0] if '페이지' in df.columns else '',
+                        '보험종류': df['보험종류'].iloc[0] if '보험종류' in df.columns else ''
+                    }
+                    
+                    # 표 작성
+                    excel_writer.write_table(
+                        df=df,
+                        highlights=highlights,
+                        change_types=changes,
+                        metadata=metadata
+                    )
+                
+                excel_writer.save()
+                result['clean'] = str(output_path)
+                result['table_count'] = len(all_tables)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"분석 실패: {str(e)}", exc_info=True)
+            return result
+        finally:
+            if hasattr(self, 'doc'):
+                self.doc.close()
+
+
+    def _generate_highlight_matrix(self, df: pd.DataFrame, colored_texts: list) -> list:
+        """HWP 변환 문서의 테이블 구조에 맞춘 하이라이트 매트릭스 생성"""
+        highlight_matrix = []
+        for _, row in df.iterrows():
+            row_highlights = []
+            for cell in row:
+                is_highlighted = any(
+                    colored['text'].strip() in str(cell) 
+                    for colored in colored_texts
+                )
+                row_highlights.append(is_highlighted)
+            highlight_matrix.append(row_highlights)
+        return highlight_matrix
+
+    def _add_metadata(self, df: pd.DataFrame, page_num: int, parsing_range: ParsingRange) -> pd.DataFrame:
+        """HWP 변환 문서의 메타데이터 추가"""
+        df.insert(0, '추출페이지', page_num + 1)
+        df.insert(1, '문서구분', parsing_range.section_type)
+        
+        if parsing_range.insurance_type:
+            df.insert(2, '보험종류', parsing_range.insurance_type)
+            
+        return df
+
+    def find_insurance_types(self) -> List[Tuple[int, str]]:
+        """종별([1종], [2종] 등) 마커가 있는 페이지 찾기"""
+        type_pages = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            matches = re.finditer(self.markers['insurance_types'], text)
+            for match in matches:
+                type_num = match.group(1)
+                type_pages.append((page_num, f"[{type_num}종]"))
+            
+        # 종 번호와 페이지 번호로 정렬
+        sorted_pages = sorted(type_pages, 
+                            key=lambda x: (int(re.search(r'\[(\d+)종\]', x[1]).group(1)), x[0]))
+        
+        if sorted_pages:
+            self.logger.info(f"발견된 보험종류: {[t[1] for t in sorted_pages]}")
+        
+        return sorted_pages
+    
+    
+    # pdf_analyzer.py 내 extract_tables() 수정
+    # extract_tables() 메서드 수정
+    def extract_tables(self, parsing_range: ParsingRange) -> List[pd.DataFrame]:
+        """특정 페이지 범위에서 표 추출"""
+        tables = []
+        for page_num in range(parsing_range.start_page, parsing_range.end_page + 1):
+            try:
+                page_tables = camelot.read_pdf(
+                    self.pdf_path,
+                    pages=str(page_num + 1),
+                    flavor='lattice',
+                    **TableExtractionConfig.get_lattice_config()
+                )
+                
+                for table in page_tables:
+                    # Camelot 테이블을 DataFrame으로 변환
+                    df = pd.DataFrame(table.data)
+                    if not df.empty:
+                        tables.append(df)
+                        
+            except Exception as e:
+                self.logger.error(f"페이지 {page_num+1} 표 추출 실패: {str(e)}")
+                continue
+                
+        return tables
+    
+    def find_payment_sections(self):
+        payment_sections = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            for pattern in self.markers['payment_section']:
+                if re.search(pattern, text):
+                    payment_sections.append(page_num)
+                    break
+        return payment_sections
+    
+
+    def map_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """컬럼 매핑 및 데이터 타입 변환"""
+        try:
+            # 컬럼 매핑
+            column_mapping = {
+                '구분': ['구분', '종류', '급부종류'],
+                '담보명': ['담보명', '보장명', '급부명'],
+                '지급사유': ['지급사유', '보장사유', '급부사유'],
+                '지급금액': ['지급금액', '보험금', '보장금액']
+            }
+            
+            # 컬럼명 처리
+            df.columns = [col.strip() for col in df.columns]
+            
+            # 매핑 적용
+            for target_col, possible_cols in column_mapping.items():
+                for col in df.columns:
+                    if col in possible_cols:
+                        df = df.rename(columns={col: target_col})
+            
+            # 숫자 데이터 변환
+            if '지급금액' in df.columns:
+                df['지급금액'] = df['지급금액'].apply(
+                    lambda x: re.sub(r'[^\d,.]', '', str(x)) if pd.notnull(x) else '')
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"컬럼 매핑 중 오류: {str(e)}")
+            return df
+    
+
+    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """추출된 표 데이터 정제 (컬럼 구조 유지)"""
+        try:
+            # 기존 컬럼명 변경 로직 제거
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # 필터링 패턴 제거 (원본 데이터 보존)
+            df = df.reset_index(drop=True)
+            
+            # 문자열 정제만 수행
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].str.replace('\n', ' ', regex=False)
+                    df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
+                    df[col] = df[col].replace(['', 'nan', 'None'], None)
+                    
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"표 정제 중 오류: {str(e)}")
+            return df
+        
+    def save_results(self, tables: List[pd.DataFrame], page_numbers: List[int]) -> Dict[str, str]:
+        """결과를 XML과 Excel로 저장"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"tables_{timestamp}"
+        
+        # XML 생성 및 저장
+        root = self.create_xml(tables, page_numbers)
+        xml_str = ET.tostring(root, encoding='unicode')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        
+        xml_path = self.xml_dir / f"{base_filename}.xml"
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
+            
+        # Excel 생성 및 저장
+        all_data = []
+        for df, page_num in zip(tables, page_numbers):
+            df = df.copy()
+            df['페이지'] = page_num
+            all_data.append(df)
+            
+        if all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            excel_path = self.excel_dir / f"{base_filename}.xlsx"
+            combined_df.to_excel(excel_path, index=False, engine='openpyxl')
+        
+        return {
+            'xml_path': str(xml_path),
+            'excel_path': str(excel_path)
+        }
+    
+    def detect_strike_through(self, page: fitz.Page) -> List[Dict]:
+        """취소선이 포함된 텍스트 영역 추출"""
+        strike_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["flags"] & fitz.TEXT_STRIKE_THROUGH:  # 취소선 플래그 확인
+                        strike_blocks.append({
+                            "text": span["text"],
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        return strike_blocks
+    
+    def detect_colored_text(self, page: fitz.Page, 
+                       black_threshold: int = 50) -> List[Dict]:
+        """검정색이 아닌 컬러 텍스트 감지 (빨강/파랑/녹색 등)"""
+        colored_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    # RGB 값 추출 (PyMuPDF 기준 0~255 범위)
+                    if 'color' not in span:
+                        continue
+                        
+                    color = span["color"]
+                    r = (color >> 16) & 0xff  # Red 채널
+                    g = (color >> 8) & 0xff   # Green 채널
+                    b = color & 0xff          # Blue 채널
+                    
+                    # 검정색 판별 조건 (모든 채널이 임계값 미만)
+                    is_black = all([c < black_threshold for c in (r, g, b)])
+                    
+                    # 검정이 아니고, 실제 텍스트가 있는 경우만 처리
+                    if not is_black and span["text"].strip():
+                        colored_blocks.append({
+                            "text": span["text"],
+                            "color": (r, g, b),  # RGB 값 저장
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        
+        return colored_blocks
+    
+    def _process_table_with_highlights(self, table, highlight_regions, page_height, 
+                                       page_num, parsing_range, sections_info=None) -> pd.DataFrame:
+        try:
+            # 1. 기본 테이블 처리
+            df = self.clean_table(table)
+            if df.empty:
+                return df, []  # 하이라이트 정보 반환 추가
+
+            # 2. 색상 텍스트 및 음영 감지
+            page = self.doc[page_num]
+            colored_texts = self.detect_colored_text(page)
+            highlight_matrix = []
+
+            # 3. 변경사항 컬럼 초기화 및 하이라이트 매트릭스 생성
+            df['변경사항'] = ''
+            for row_idx, row in df.iterrows():
+                row_highlights = []
+                for col_idx, cell in enumerate(row):
+                    # 색상 텍스트 매칭 검사
+                    is_highlighted = any(
+                        colored['text'].strip() in str(cell)
+                        for colored in colored_texts
+                    )
+                    row_highlights.append(is_highlighted)
+                    if is_highlighted:
+                        df.iat[row_idx, col_idx] = f"{cell} [색상]"  # 셀 내용에 마킹
+                highlight_matrix.append(row_highlights)
+
+            return df, highlight_matrix  # 하이라이트 정보 반환
+
+        except Exception as e:
+            self.logger.error(f"표 처리 오류: {str(e)}")
+            return pd.DataFrame(), []
+        
+    def detect_colored_areas(self, page: fitz.Page) -> List[Dict]:
+        """음영 영역 감지 (이미지 기반)"""
+        img = self.pdf_to_image(page)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        
+        # 노란색 범위 정의 (H: 20-30, S: 100-255, V: 100-255)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        colored_areas = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            colored_areas.append({
+                "bbox": (x, y, x+w, y+h),
+                "color": "YELLOW"
+            })
+        return colored_areas
+    
+    
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
+        
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
+        
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",  # 또는 다른 적절한 모델
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "start_page" in result and "end_page" in result:
+                # 페이지 번호를 0-인덱스로 변환 (1부터 시작하는 페이지 번호를 받았으므로)
+                validated_start = max(0, result["start_page"] - 1)
+                validated_end = min(len(self.doc) - 1, result["end_page"] - 1)
+                
+                # 범위 검증
+                if validated_start <= validated_end:
+                    return {
+                        "start": validated_start,
+                        "end": validated_end,
+                        "confidence": "high" if result["is_appropriate"] else "medium",
+                        "reason": result.get("reasoning", "LLM 검증 완료")
+                    }
+            
+            # 검증에 실패한 경우 원본 후보 반환
+            self.logger.warning("LLM 검증 결과가 유효하지 않아 원본 후보를 사용합니다")
+            return candidate
+            
+        except Exception as e:
+            self.logger.error(f"LLM 검증 중 오류: {str(e)}")
+            return candidate
+
+    def verify_payment_section_with_llm(self, candidate_page):
+        """보험금 지급 섹션 LLM 검증"""
+        # 후보 페이지와 주변 페이지 샘플링
+        sample_pages = [
+            max(0, candidate_page - 1),
+            candidate_page,
+            min(candidate_page + 1, len(self.doc) - 1)
+        ]
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            if len(text) > 1000:
+                sample_text = f"{text[:800]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '보험금 지급' 섹션의 시작 페이지를 확인해주세요.
+            
+            후보 페이지: {candidate_page + 1}페이지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 페이지가 '보험금 지급' 섹션의 적절한 시작 페이지인가요?
+            2. 만약 아니라면, 어느 페이지가 더 적절한가요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "page": 적절한 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"보험금 지급 섹션 LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "page" in result:
+                # 적절한 페이지 번호 계산 (0-인덱스)
+                validated_page = max(0, min(len(self.doc) - 1, result["page"] - 1))
+                
+                if not result["is_appropriate"]:
+                    self.logger.info(f"LLM 검증으로 보험금 지급 섹션 페이지 변경: {candidate_page + 1} -> {validated_page + 1}")
+                    return validated_page
+            
+            # 검증에 실패하거나 적절한 경우 원본 페이지 반환
+            return candidate_page
+            
+        except Exception as e:
+            self.logger.error(f"보험금 지급 섹션 LLM 검증 중 오류: {str(e)}")
+            return candidate_page
+
+    def _analyze_pdf_structure(self):
+        """PDF 구조 상세 분석"""
+        print("\n=== PDF 구조 분석 ===")
+        self.logger.info("PDF 구조 분석 시작")
+        
+        for page_num in range(len(self.doc)):
+            page = self.doc[page_num]
+            
+            # 페이지의 블록 정보 추출
+            try:
+                blocks = page.get_text("dict")['blocks']
+                
+                print(f"\n페이지 {page_num + 1} - 블록 수: {len(blocks)}")
+                self.logger.info(f"페이지 {page_num + 1} 블록 분석")
+                
+                for block_index, block in enumerate(blocks, 1):
+                    if block['type'] == 0:  # 텍스트 블록
+                        block_text = ''
+                        for line in block['lines']:
+                            line_text = ''.join([span['text'] for span in line['spans']])
+                            block_text += line_text + '\n'
+                        
+                        # 블록 길이가 너무 길면 자르기
+                        block_text = block_text[:500] + '...' if len(block_text) > 500 else block_text
+                        
+                        print(f"  블록 {block_index}:")
+                        print(f"  내용 (일부): {block_text}")
+            
+            except Exception as e:
+                print(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+                self.logger.error(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+
+
+    def analyze(self) -> dict:
+        """PDF 분석 실행"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result = {'clean': '', 'table_count': 0}
+        
+        try:
+            ranges = self.determine_parsing_ranges()
+            if not ranges:
+                return result
+
+            all_tables = []
+            all_highlights = []
+            all_changes = []
+            
+            for parsing_range in ranges:
+                tables = self.extract_tables(parsing_range)
+                for table in tables:
+                    page_num = parsing_range.start_page
+                    page = self.doc[page_num]
+                    
+                    # 표 처리 및 하이라이트 정보 추출
+                    processed_df, highlights = self.process_table(table, page)
+                    
+                    # 변경 유형 감지
+                    changes = []
+                    for row_highlights in highlights:
+                        row_changes = []
+                        for is_highlighted in row_highlights:
+                            if is_highlighted:
+                                # 여기서 변경 유형 판별 로직 추가 가능
+                                # 예: 색상이나 다른 특징으로 added/deleted/modified 판별
+                                row_changes.append('modified')
+                            else:
+                                row_changes.append('')
+                        changes.append(row_changes)
+                    
+                    # 메타데이터 추가
+                    processed_df = self._add_metadata(processed_df, page_num, parsing_range)
+                    
+                    all_tables.append(processed_df)
+                    all_highlights.append(highlights)
+                    all_changes.append(changes)
+
+            if all_tables:
+                # ExcelWriter를 사용하여 결과 저장
+                output_path = self.output_dir / f"보험약관분석_{timestamp}.xlsx"
+                excel_writer = ExcelWriter(str(output_path))
+                
+                # 섹션별로 데이터 작성
+                current_section = None
+                for idx, (df, highlights, changes) in enumerate(zip(all_tables, all_highlights, all_changes)):
+                    # 섹션 변경 확인
+                    section = df['구분'].iloc[0] if '구분' in df.columns else f'Section_{idx+1}'
+                    if section != current_section:
+                        excel_writer.write_section_header(section)
+                        current_section = section
+                    
+                    # 메타데이터 준비
+                    metadata = {
+                        '페이지': df['페이지'].iloc[0] if '페이지' in df.columns else '',
+                        '보험종류': df['보험종류'].iloc[0] if '보험종류' in df.columns else ''
+                    }
+                    
+                    # 표 작성
+                    excel_writer.write_table(
+                        df=df,
+                        highlights=highlights,
+                        change_types=changes,
+                        metadata=metadata
+                    )
+                
+                excel_writer.save()
+                result['clean'] = str(output_path)
+                result['table_count'] = len(all_tables)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"분석 실패: {str(e)}", exc_info=True)
+            return result
+        finally:
+            if hasattr(self, 'doc'):
+                self.doc.close()
+
+
+    def _generate_highlight_matrix(self, df: pd.DataFrame, colored_texts: list) -> list:
+        """HWP 변환 문서의 테이블 구조에 맞춘 하이라이트 매트릭스 생성"""
+        highlight_matrix = []
+        for _, row in df.iterrows():
+            row_highlights = []
+            for cell in row:
+                is_highlighted = any(
+                    colored['text'].strip() in str(cell) 
+                    for colored in colored_texts
+                )
+                row_highlights.append(is_highlighted)
+            highlight_matrix.append(row_highlights)
+        return highlight_matrix
+
+    def _add_metadata(self, df: pd.DataFrame, page_num: int, parsing_range: ParsingRange) -> pd.DataFrame:
+        """HWP 변환 문서의 메타데이터 추가"""
+        df.insert(0, '추출페이지', page_num + 1)
+        df.insert(1, '문서구분', parsing_range.section_type)
+        
+        if parsing_range.insurance_type:
+            df.insert(2, '보험종류', parsing_range.insurance_type)
+            
+        return df
+
+    def find_insurance_types(self) -> List[Tuple[int, str]]:
+        """종별([1종], [2종] 등) 마커가 있는 페이지 찾기"""
+        type_pages = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            matches = re.finditer(self.markers['insurance_types'], text)
+            for match in matches:
+                type_num = match.group(1)
+                type_pages.append((page_num, f"[{type_num}종]"))
+            
+        # 종 번호와 페이지 번호로 정렬
+        sorted_pages = sorted(type_pages, 
+                            key=lambda x: (int(re.search(r'\[(\d+)종\]', x[1]).group(1)), x[0]))
+        
+        if sorted_pages:
+            self.logger.info(f"발견된 보험종류: {[t[1] for t in sorted_pages]}")
+        
+        return sorted_pages
+    
+    
+    # pdf_analyzer.py 내 extract_tables() 수정
+    # extract_tables() 메서드 수정
+    def extract_tables(self, parsing_range: ParsingRange) -> List[pd.DataFrame]:
+        """특정 페이지 범위에서 표 추출"""
+        tables = []
+        for page_num in range(parsing_range.start_page, parsing_range.end_page + 1):
+            try:
+                page_tables = camelot.read_pdf(
+                    self.pdf_path,
+                    pages=str(page_num + 1),
+                    flavor='lattice',
+                    **TableExtractionConfig.get_lattice_config()
+                )
+                
+                for table in page_tables:
+                    # Camelot 테이블을 DataFrame으로 변환
+                    df = pd.DataFrame(table.data)
+                    if not df.empty:
+                        tables.append(df)
+                        
+            except Exception as e:
+                self.logger.error(f"페이지 {page_num+1} 표 추출 실패: {str(e)}")
+                continue
+                
+        return tables
+    
+    def find_payment_sections(self):
+        payment_sections = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            for pattern in self.markers['payment_section']:
+                if re.search(pattern, text):
+                    payment_sections.append(page_num)
+                    break
+        return payment_sections
+    
+
+    def map_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """컬럼 매핑 및 데이터 타입 변환"""
+        try:
+            # 컬럼 매핑
+            column_mapping = {
+                '구분': ['구분', '종류', '급부종류'],
+                '담보명': ['담보명', '보장명', '급부명'],
+                '지급사유': ['지급사유', '보장사유', '급부사유'],
+                '지급금액': ['지급금액', '보험금', '보장금액']
+            }
+            
+            # 컬럼명 처리
+            df.columns = [col.strip() for col in df.columns]
+            
+            # 매핑 적용
+            for target_col, possible_cols in column_mapping.items():
+                for col in df.columns:
+                    if col in possible_cols:
+                        df = df.rename(columns={col: target_col})
+            
+            # 숫자 데이터 변환
+            if '지급금액' in df.columns:
+                df['지급금액'] = df['지급금액'].apply(
+                    lambda x: re.sub(r'[^\d,.]', '', str(x)) if pd.notnull(x) else '')
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"컬럼 매핑 중 오류: {str(e)}")
+            return df
+    
+
+    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """추출된 표 데이터 정제 (컬럼 구조 유지)"""
+        try:
+            # 기존 컬럼명 변경 로직 제거
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # 필터링 패턴 제거 (원본 데이터 보존)
+            df = df.reset_index(drop=True)
+            
+            # 문자열 정제만 수행
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].str.replace('\n', ' ', regex=False)
+                    df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
+                    df[col] = df[col].replace(['', 'nan', 'None'], None)
+                    
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"표 정제 중 오류: {str(e)}")
+            return df
+        
+    def save_results(self, tables: List[pd.DataFrame], page_numbers: List[int]) -> Dict[str, str]:
+        """결과를 XML과 Excel로 저장"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"tables_{timestamp}"
+        
+        # XML 생성 및 저장
+        root = self.create_xml(tables, page_numbers)
+        xml_str = ET.tostring(root, encoding='unicode')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        
+        xml_path = self.xml_dir / f"{base_filename}.xml"
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
+            
+        # Excel 생성 및 저장
+        all_data = []
+        for df, page_num in zip(tables, page_numbers):
+            df = df.copy()
+            df['페이지'] = page_num
+            all_data.append(df)
+            
+        if all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            excel_path = self.excel_dir / f"{base_filename}.xlsx"
+            combined_df.to_excel(excel_path, index=False, engine='openpyxl')
+        
+        return {
+            'xml_path': str(xml_path),
+            'excel_path': str(excel_path)
+        }
+    
+    def detect_strike_through(self, page: fitz.Page) -> List[Dict]:
+        """취소선이 포함된 텍스트 영역 추출"""
+        strike_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["flags"] & fitz.TEXT_STRIKE_THROUGH:  # 취소선 플래그 확인
+                        strike_blocks.append({
+                            "text": span["text"],
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        return strike_blocks
+    
+    def detect_colored_text(self, page: fitz.Page, 
+                       black_threshold: int = 50) -> List[Dict]:
+        """검정색이 아닌 컬러 텍스트 감지 (빨강/파랑/녹색 등)"""
+        colored_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    # RGB 값 추출 (PyMuPDF 기준 0~255 범위)
+                    if 'color' not in span:
+                        continue
+                        
+                    color = span["color"]
+                    r = (color >> 16) & 0xff  # Red 채널
+                    g = (color >> 8) & 0xff   # Green 채널
+                    b = color & 0xff          # Blue 채널
+                    
+                    # 검정색 판별 조건 (모든 채널이 임계값 미만)
+                    is_black = all([c < black_threshold for c in (r, g, b)])
+                    
+                    # 검정이 아니고, 실제 텍스트가 있는 경우만 처리
+                    if not is_black and span["text"].strip():
+                        colored_blocks.append({
+                            "text": span["text"],
+                            "color": (r, g, b),  # RGB 값 저장
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        
+        return colored_blocks
+    
+    def _process_table_with_highlights(self, table, highlight_regions, page_height, 
+                                       page_num, parsing_range, sections_info=None) -> pd.DataFrame:
+        try:
+            # 1. 기본 테이블 처리
+            df = self.clean_table(table)
+            if df.empty:
+                return df, []  # 하이라이트 정보 반환 추가
+
+            # 2. 색상 텍스트 및 음영 감지
+            page = self.doc[page_num]
+            colored_texts = self.detect_colored_text(page)
+            highlight_matrix = []
+
+            # 3. 변경사항 컬럼 초기화 및 하이라이트 매트릭스 생성
+            df['변경사항'] = ''
+            for row_idx, row in df.iterrows():
+                row_highlights = []
+                for col_idx, cell in enumerate(row):
+                    # 색상 텍스트 매칭 검사
+                    is_highlighted = any(
+                        colored['text'].strip() in str(cell)
+                        for colored in colored_texts
+                    )
+                    row_highlights.append(is_highlighted)
+                    if is_highlighted:
+                        df.iat[row_idx, col_idx] = f"{cell} [색상]"  # 셀 내용에 마킹
+                highlight_matrix.append(row_highlights)
+
+            return df, highlight_matrix  # 하이라이트 정보 반환
+
+        except Exception as e:
+            self.logger.error(f"표 처리 오류: {str(e)}")
+            return pd.DataFrame(), []
+        
+    def detect_colored_areas(self, page: fitz.Page) -> List[Dict]:
+        """음영 영역 감지 (이미지 기반)"""
+        img = self.pdf_to_image(page)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        
+        # 노란색 범위 정의 (H: 20-30, S: 100-255, V: 100-255)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        colored_areas = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            colored_areas.append({
+                "bbox": (x, y, x+w, y+h),
+                "color": "YELLOW"
+            })
+        return colored_areas
+    
+    
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
+        
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
+        
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",  # 또는 다른 적절한 모델
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "start_page" in result and "end_page" in result:
+                # 페이지 번호를 0-인덱스로 변환 (1부터 시작하는 페이지 번호를 받았으므로)
+                validated_start = max(0, result["start_page"] - 1)
+                validated_end = min(len(self.doc) - 1, result["end_page"] - 1)
+                
+                # 범위 검증
+                if validated_start <= validated_end:
+                    return {
+                        "start": validated_start,
+                        "end": validated_end,
+                        "confidence": "high" if result["is_appropriate"] else "medium",
+                        "reason": result.get("reasoning", "LLM 검증 완료")
+                    }
+            
+            # 검증에 실패한 경우 원본 후보 반환
+            self.logger.warning("LLM 검증 결과가 유효하지 않아 원본 후보를 사용합니다")
+            return candidate
+            
+        except Exception as e:
+            self.logger.error(f"LLM 검증 중 오류: {str(e)}")
+            return candidate
+
+    def verify_payment_section_with_llm(self, candidate_page):
+        """보험금 지급 섹션 LLM 검증"""
+        # 후보 페이지와 주변 페이지 샘플링
+        sample_pages = [
+            max(0, candidate_page - 1),
+            candidate_page,
+            min(candidate_page + 1, len(self.doc) - 1)
+        ]
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            if len(text) > 1000:
+                sample_text = f"{text[:800]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '보험금 지급' 섹션의 시작 페이지를 확인해주세요.
+            
+            후보 페이지: {candidate_page + 1}페이지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 페이지가 '보험금 지급' 섹션의 적절한 시작 페이지인가요?
+            2. 만약 아니라면, 어느 페이지가 더 적절한가요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "page": 적절한 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"보험금 지급 섹션 LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "page" in result:
+                # 적절한 페이지 번호 계산 (0-인덱스)
+                validated_page = max(0, min(len(self.doc) - 1, result["page"] - 1))
+                
+                if not result["is_appropriate"]:
+                    self.logger.info(f"LLM 검증으로 보험금 지급 섹션 페이지 변경: {candidate_page + 1} -> {validated_page + 1}")
+                    return validated_page
+            
+            # 검증에 실패하거나 적절한 경우 원본 페이지 반환
+            return candidate_page
+            
+        except Exception as e:
+            self.logger.error(f"보험금 지급 섹션 LLM 검증 중 오류: {str(e)}")
+            return candidate_page
+
+    def _analyze_pdf_structure(self):
+        """PDF 구조 상세 분석"""
+        print("\n=== PDF 구조 분석 ===")
+        self.logger.info("PDF 구조 분석 시작")
+        
+        for page_num in range(len(self.doc)):
+            page = self.doc[page_num]
+            
+            # 페이지의 블록 정보 추출
+            try:
+                blocks = page.get_text("dict")['blocks']
+                
+                print(f"\n페이지 {page_num + 1} - 블록 수: {len(blocks)}")
+                self.logger.info(f"페이지 {page_num + 1} 블록 분석")
+                
+                for block_index, block in enumerate(blocks, 1):
+                    if block['type'] == 0:  # 텍스트 블록
+                        block_text = ''
+                        for line in block['lines']:
+                            line_text = ''.join([span['text'] for span in line['spans']])
+                            block_text += line_text + '\n'
+                        
+                        # 블록 길이가 너무 길면 자르기
+                        block_text = block_text[:500] + '...' if len(block_text) > 500 else block_text
+                        
+                        print(f"  블록 {block_index}:")
+                        print(f"  내용 (일부): {block_text}")
+            
+            except Exception as e:
+                print(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+                self.logger.error(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+
+
+    def analyze(self) -> dict:
+        """PDF 분석 실행"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result = {'clean': '', 'table_count': 0}
+        
+        try:
+            ranges = self.determine_parsing_ranges()
+            if not ranges:
+                return result
+
+            all_tables = []
+            all_highlights = []
+            all_changes = []
+            
+            for parsing_range in ranges:
+                tables = self.extract_tables(parsing_range)
+                for table in tables:
+                    page_num = parsing_range.start_page
+                    page = self.doc[page_num]
+                    
+                    # 표 처리 및 하이라이트 정보 추출
+                    processed_df, highlights = self.process_table(table, page)
+                    
+                    # 변경 유형 감지
+                    changes = []
+                    for row_highlights in highlights:
+                        row_changes = []
+                        for is_highlighted in row_highlights:
+                            if is_highlighted:
+                                # 여기서 변경 유형 판별 로직 추가 가능
+                                # 예: 색상이나 다른 특징으로 added/deleted/modified 판별
+                                row_changes.append('modified')
+                            else:
+                                row_changes.append('')
+                        changes.append(row_changes)
+                    
+                    # 메타데이터 추가
+                    processed_df = self._add_metadata(processed_df, page_num, parsing_range)
+                    
+                    all_tables.append(processed_df)
+                    all_highlights.append(highlights)
+                    all_changes.append(changes)
+
+            if all_tables:
+                # ExcelWriter를 사용하여 결과 저장
+                output_path = self.output_dir / f"보험약관분석_{timestamp}.xlsx"
+                excel_writer = ExcelWriter(str(output_path))
+                
+                # 섹션별로 데이터 작성
+                current_section = None
+                for idx, (df, highlights, changes) in enumerate(zip(all_tables, all_highlights, all_changes)):
+                    # 섹션 변경 확인
+                    section = df['구분'].iloc[0] if '구분' in df.columns else f'Section_{idx+1}'
+                    if section != current_section:
+                        excel_writer.write_section_header(section)
+                        current_section = section
+                    
+                    # 메타데이터 준비
+                    metadata = {
+                        '페이지': df['페이지'].iloc[0] if '페이지' in df.columns else '',
+                        '보험종류': df['보험종류'].iloc[0] if '보험종류' in df.columns else ''
+                    }
+                    
+                    # 표 작성
+                    excel_writer.write_table(
+                        df=df,
+                        highlights=highlights,
+                        change_types=changes,
+                        metadata=metadata
+                    )
+                
+                excel_writer.save()
+                result['clean'] = str(output_path)
+                result['table_count'] = len(all_tables)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"분석 실패: {str(e)}", exc_info=True)
+            return result
+        finally:
+            if hasattr(self, 'doc'):
+                self.doc.close()
+
+
+    def _generate_highlight_matrix(self, df: pd.DataFrame, colored_texts: list) -> list:
+        """HWP 변환 문서의 테이블 구조에 맞춘 하이라이트 매트릭스 생성"""
+        highlight_matrix = []
+        for _, row in df.iterrows():
+            row_highlights = []
+            for cell in row:
+                is_highlighted = any(
+                    colored['text'].strip() in str(cell) 
+                    for colored in colored_texts
+                )
+                row_highlights.append(is_highlighted)
+            highlight_matrix.append(row_highlights)
+        return highlight_matrix
+
+    def _add_metadata(self, df: pd.DataFrame, page_num: int, parsing_range: ParsingRange) -> pd.DataFrame:
+        """HWP 변환 문서의 메타데이터 추가"""
+        df.insert(0, '추출페이지', page_num + 1)
+        df.insert(1, '문서구분', parsing_range.section_type)
+        
+        if parsing_range.insurance_type:
+            df.insert(2, '보험종류', parsing_range.insurance_type)
+            
+        return df
+
+    def find_insurance_types(self) -> List[Tuple[int, str]]:
+        """종별([1종], [2종] 등) 마커가 있는 페이지 찾기"""
+        type_pages = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            matches = re.finditer(self.markers['insurance_types'], text)
+            for match in matches:
+                type_num = match.group(1)
+                type_pages.append((page_num, f"[{type_num}종]"))
+            
+        # 종 번호와 페이지 번호로 정렬
+        sorted_pages = sorted(type_pages, 
+                            key=lambda x: (int(re.search(r'\[(\d+)종\]', x[1]).group(1)), x[0]))
+        
+        if sorted_pages:
+            self.logger.info(f"발견된 보험종류: {[t[1] for t in sorted_pages]}")
+        
+        return sorted_pages
+    
+    
+    # pdf_analyzer.py 내 extract_tables() 수정
+    # extract_tables() 메서드 수정
+    def extract_tables(self, parsing_range: ParsingRange) -> List[pd.DataFrame]:
+        """특정 페이지 범위에서 표 추출"""
+        tables = []
+        for page_num in range(parsing_range.start_page, parsing_range.end_page + 1):
+            try:
+                page_tables = camelot.read_pdf(
+                    self.pdf_path,
+                    pages=str(page_num + 1),
+                    flavor='lattice',
+                    **TableExtractionConfig.get_lattice_config()
+                )
+                
+                for table in page_tables:
+                    # Camelot 테이블을 DataFrame으로 변환
+                    df = pd.DataFrame(table.data)
+                    if not df.empty:
+                        tables.append(df)
+                        
+            except Exception as e:
+                self.logger.error(f"페이지 {page_num+1} 표 추출 실패: {str(e)}")
+                continue
+                
+        return tables
+    
+    def find_payment_sections(self):
+        payment_sections = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            for pattern in self.markers['payment_section']:
+                if re.search(pattern, text):
+                    payment_sections.append(page_num)
+                    break
+        return payment_sections
+    
+
+    def map_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """컬럼 매핑 및 데이터 타입 변환"""
+        try:
+            # 컬럼 매핑
+            column_mapping = {
+                '구분': ['구분', '종류', '급부종류'],
+                '담보명': ['담보명', '보장명', '급부명'],
+                '지급사유': ['지급사유', '보장사유', '급부사유'],
+                '지급금액': ['지급금액', '보험금', '보장금액']
+            }
+            
+            # 컬럼명 처리
+            df.columns = [col.strip() for col in df.columns]
+            
+            # 매핑 적용
+            for target_col, possible_cols in column_mapping.items():
+                for col in df.columns:
+                    if col in possible_cols:
+                        df = df.rename(columns={col: target_col})
+            
+            # 숫자 데이터 변환
+            if '지급금액' in df.columns:
+                df['지급금액'] = df['지급금액'].apply(
+                    lambda x: re.sub(r'[^\d,.]', '', str(x)) if pd.notnull(x) else '')
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"컬럼 매핑 중 오류: {str(e)}")
+            return df
+    
+
+    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """추출된 표 데이터 정제 (컬럼 구조 유지)"""
+        try:
+            # 기존 컬럼명 변경 로직 제거
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # 필터링 패턴 제거 (원본 데이터 보존)
+            df = df.reset_index(drop=True)
+            
+            # 문자열 정제만 수행
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].str.replace('\n', ' ', regex=False)
+                    df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
+                    df[col] = df[col].replace(['', 'nan', 'None'], None)
+                    
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"표 정제 중 오류: {str(e)}")
+            return df
+        
+    def save_results(self, tables: List[pd.DataFrame], page_numbers: List[int]) -> Dict[str, str]:
+        """결과를 XML과 Excel로 저장"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"tables_{timestamp}"
+        
+        # XML 생성 및 저장
+        root = self.create_xml(tables, page_numbers)
+        xml_str = ET.tostring(root, encoding='unicode')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        
+        xml_path = self.xml_dir / f"{base_filename}.xml"
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
+            
+        # Excel 생성 및 저장
+        all_data = []
+        for df, page_num in zip(tables, page_numbers):
+            df = df.copy()
+            df['페이지'] = page_num
+            all_data.append(df)
+            
+        if all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            excel_path = self.excel_dir / f"{base_filename}.xlsx"
+            combined_df.to_excel(excel_path, index=False, engine='openpyxl')
+        
+        return {
+            'xml_path': str(xml_path),
+            'excel_path': str(excel_path)
+        }
+    
+    def detect_strike_through(self, page: fitz.Page) -> List[Dict]:
+        """취소선이 포함된 텍스트 영역 추출"""
+        strike_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["flags"] & fitz.TEXT_STRIKE_THROUGH:  # 취소선 플래그 확인
+                        strike_blocks.append({
+                            "text": span["text"],
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        return strike_blocks
+    
+    def detect_colored_text(self, page: fitz.Page, 
+                       black_threshold: int = 50) -> List[Dict]:
+        """검정색이 아닌 컬러 텍스트 감지 (빨강/파랑/녹색 등)"""
+        colored_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    # RGB 값 추출 (PyMuPDF 기준 0~255 범위)
+                    if 'color' not in span:
+                        continue
+                        
+                    color = span["color"]
+                    r = (color >> 16) & 0xff  # Red 채널
+                    g = (color >> 8) & 0xff   # Green 채널
+                    b = color & 0xff          # Blue 채널
+                    
+                    # 검정색 판별 조건 (모든 채널이 임계값 미만)
+                    is_black = all([c < black_threshold for c in (r, g, b)])
+                    
+                    # 검정이 아니고, 실제 텍스트가 있는 경우만 처리
+                    if not is_black and span["text"].strip():
+                        colored_blocks.append({
+                            "text": span["text"],
+                            "color": (r, g, b),  # RGB 값 저장
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        
+        return colored_blocks
+    
+    def _process_table_with_highlights(self, table, highlight_regions, page_height, 
+                                       page_num, parsing_range, sections_info=None) -> pd.DataFrame:
+        try:
+            # 1. 기본 테이블 처리
+            df = self.clean_table(table)
+            if df.empty:
+                return df, []  # 하이라이트 정보 반환 추가
+
+            # 2. 색상 텍스트 및 음영 감지
+            page = self.doc[page_num]
+            colored_texts = self.detect_colored_text(page)
+            highlight_matrix = []
+
+            # 3. 변경사항 컬럼 초기화 및 하이라이트 매트릭스 생성
+            df['변경사항'] = ''
+            for row_idx, row in df.iterrows():
+                row_highlights = []
+                for col_idx, cell in enumerate(row):
+                    # 색상 텍스트 매칭 검사
+                    is_highlighted = any(
+                        colored['text'].strip() in str(cell)
+                        for colored in colored_texts
+                    )
+                    row_highlights.append(is_highlighted)
+                    if is_highlighted:
+                        df.iat[row_idx, col_idx] = f"{cell} [색상]"  # 셀 내용에 마킹
+                highlight_matrix.append(row_highlights)
+
+            return df, highlight_matrix  # 하이라이트 정보 반환
+
+        except Exception as e:
+            self.logger.error(f"표 처리 오류: {str(e)}")
+            return pd.DataFrame(), []
+        
+    def detect_colored_areas(self, page: fitz.Page) -> List[Dict]:
+        """음영 영역 감지 (이미지 기반)"""
+        img = self.pdf_to_image(page)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        
+        # 노란색 범위 정의 (H: 20-30, S: 100-255, V: 100-255)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        colored_areas = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            colored_areas.append({
+                "bbox": (x, y, x+w, y+h),
+                "color": "YELLOW"
+            })
+        return colored_areas
+    
+    
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
+        
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
+        
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",  # 또는 다른 적절한 모델
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "start_page" in result and "end_page" in result:
+                # 페이지 번호를 0-인덱스로 변환 (1부터 시작하는 페이지 번호를 받았으므로)
+                validated_start = max(0, result["start_page"] - 1)
+                validated_end = min(len(self.doc) - 1, result["end_page"] - 1)
+                
+                # 범위 검증
+                if validated_start <= validated_end:
+                    return {
+                        "start": validated_start,
+                        "end": validated_end,
+                        "confidence": "high" if result["is_appropriate"] else "medium",
+                        "reason": result.get("reasoning", "LLM 검증 완료")
+                    }
+            
+            # 검증에 실패한 경우 원본 후보 반환
+            self.logger.warning("LLM 검증 결과가 유효하지 않아 원본 후보를 사용합니다")
+            return candidate
+            
+        except Exception as e:
+            self.logger.error(f"LLM 검증 중 오류: {str(e)}")
+            return candidate
+
+    def verify_payment_section_with_llm(self, candidate_page):
+        """보험금 지급 섹션 LLM 검증"""
+        # 후보 페이지와 주변 페이지 샘플링
+        sample_pages = [
+            max(0, candidate_page - 1),
+            candidate_page,
+            min(candidate_page + 1, len(self.doc) - 1)
+        ]
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            if len(text) > 1000:
+                sample_text = f"{text[:800]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '보험금 지급' 섹션의 시작 페이지를 확인해주세요.
+            
+            후보 페이지: {candidate_page + 1}페이지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 페이지가 '보험금 지급' 섹션의 적절한 시작 페이지인가요?
+            2. 만약 아니라면, 어느 페이지가 더 적절한가요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "page": 적절한 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"보험금 지급 섹션 LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "page" in result:
+                # 적절한 페이지 번호 계산 (0-인덱스)
+                validated_page = max(0, min(len(self.doc) - 1, result["page"] - 1))
+                
+                if not result["is_appropriate"]:
+                    self.logger.info(f"LLM 검증으로 보험금 지급 섹션 페이지 변경: {candidate_page + 1} -> {validated_page + 1}")
+                    return validated_page
+            
+            # 검증에 실패하거나 적절한 경우 원본 페이지 반환
+            return candidate_page
+            
+        except Exception as e:
+            self.logger.error(f"보험금 지급 섹션 LLM 검증 중 오류: {str(e)}")
+            return candidate_page
+
+    def _analyze_pdf_structure(self):
+        """PDF 구조 상세 분석"""
+        print("\n=== PDF 구조 분석 ===")
+        self.logger.info("PDF 구조 분석 시작")
+        
+        for page_num in range(len(self.doc)):
+            page = self.doc[page_num]
+            
+            # 페이지의 블록 정보 추출
+            try:
+                blocks = page.get_text("dict")['blocks']
+                
+                print(f"\n페이지 {page_num + 1} - 블록 수: {len(blocks)}")
+                self.logger.info(f"페이지 {page_num + 1} 블록 분석")
+                
+                for block_index, block in enumerate(blocks, 1):
+                    if block['type'] == 0:  # 텍스트 블록
+                        block_text = ''
+                        for line in block['lines']:
+                            line_text = ''.join([span['text'] for span in line['spans']])
+                            block_text += line_text + '\n'
+                        
+                        # 블록 길이가 너무 길면 자르기
+                        block_text = block_text[:500] + '...' if len(block_text) > 500 else block_text
+                        
+                        print(f"  블록 {block_index}:")
+                        print(f"  내용 (일부): {block_text}")
+            
+            except Exception as e:
+                print(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+                self.logger.error(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+
+
+    def analyze(self) -> dict:
+        """PDF 분석 실행"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result = {'clean': '', 'table_count': 0}
+        
+        try:
+            ranges = self.determine_parsing_ranges()
+            if not ranges:
+                return result
+
+            all_tables = []
+            all_highlights = []
+            all_changes = []
+            
+            for parsing_range in ranges:
+                tables = self.extract_tables(parsing_range)
+                for table in tables:
+                    page_num = parsing_range.start_page
+                    page = self.doc[page_num]
+                    
+                    # 표 처리 및 하이라이트 정보 추출
+                    processed_df, highlights = self.process_table(table, page)
+                    
+                    # 변경 유형 감지
+                    changes = []
+                    for row_highlights in highlights:
+                        row_changes = []
+                        for is_highlighted in row_highlights:
+                            if is_highlighted:
+                                # 여기서 변경 유형 판별 로직 추가 가능
+                                # 예: 색상이나 다른 특징으로 added/deleted/modified 판별
+                                row_changes.append('modified')
+                            else:
+                                row_changes.append('')
+                        changes.append(row_changes)
+                    
+                    # 메타데이터 추가
+                    processed_df = self._add_metadata(processed_df, page_num, parsing_range)
+                    
+                    all_tables.append(processed_df)
+                    all_highlights.append(highlights)
+                    all_changes.append(changes)
+
+            if all_tables:
+                # ExcelWriter를 사용하여 결과 저장
+                output_path = self.output_dir / f"보험약관분석_{timestamp}.xlsx"
+                excel_writer = ExcelWriter(str(output_path))
+                
+                # 섹션별로 데이터 작성
+                current_section = None
+                for idx, (df, highlights, changes) in enumerate(zip(all_tables, all_highlights, all_changes)):
+                    # 섹션 변경 확인
+                    section = df['구분'].iloc[0] if '구분' in df.columns else f'Section_{idx+1}'
+                    if section != current_section:
+                        excel_writer.write_section_header(section)
+                        current_section = section
+                    
+                    # 메타데이터 준비
+                    metadata = {
+                        '페이지': df['페이지'].iloc[0] if '페이지' in df.columns else '',
+                        '보험종류': df['보험종류'].iloc[0] if '보험종류' in df.columns else ''
+                    }
+                    
+                    # 표 작성
+                    excel_writer.write_table(
+                        df=df,
+                        highlights=highlights,
+                        change_types=changes,
+                        metadata=metadata
+                    )
+                
+                excel_writer.save()
+                result['clean'] = str(output_path)
+                result['table_count'] = len(all_tables)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"분석 실패: {str(e)}", exc_info=True)
+            return result
+        finally:
+            if hasattr(self, 'doc'):
+                self.doc.close()
+
+
+    def _generate_highlight_matrix(self, df: pd.DataFrame, colored_texts: list) -> list:
+        """HWP 변환 문서의 테이블 구조에 맞춘 하이라이트 매트릭스 생성"""
+        highlight_matrix = []
+        for _, row in df.iterrows():
+            row_highlights = []
+            for cell in row:
+                is_highlighted = any(
+                    colored['text'].strip() in str(cell) 
+                    for colored in colored_texts
+                )
+                row_highlights.append(is_highlighted)
+            highlight_matrix.append(row_highlights)
+        return highlight_matrix
+
+    def _add_metadata(self, df: pd.DataFrame, page_num: int, parsing_range: ParsingRange) -> pd.DataFrame:
+        """HWP 변환 문서의 메타데이터 추가"""
+        df.insert(0, '추출페이지', page_num + 1)
+        df.insert(1, '문서구분', parsing_range.section_type)
+        
+        if parsing_range.insurance_type:
+            df.insert(2, '보험종류', parsing_range.insurance_type)
+            
+        return df
+
+    def find_insurance_types(self) -> List[Tuple[int, str]]:
+        """종별([1종], [2종] 등) 마커가 있는 페이지 찾기"""
+        type_pages = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            matches = re.finditer(self.markers['insurance_types'], text)
+            for match in matches:
+                type_num = match.group(1)
+                type_pages.append((page_num, f"[{type_num}종]"))
+            
+        # 종 번호와 페이지 번호로 정렬
+        sorted_pages = sorted(type_pages, 
+                            key=lambda x: (int(re.search(r'\[(\d+)종\]', x[1]).group(1)), x[0]))
+        
+        if sorted_pages:
+            self.logger.info(f"발견된 보험종류: {[t[1] for t in sorted_pages]}")
+        
+        return sorted_pages
+    
+    
+    # pdf_analyzer.py 내 extract_tables() 수정
+    # extract_tables() 메서드 수정
+    def extract_tables(self, parsing_range: ParsingRange) -> List[pd.DataFrame]:
+        """특정 페이지 범위에서 표 추출"""
+        tables = []
+        for page_num in range(parsing_range.start_page, parsing_range.end_page + 1):
+            try:
+                page_tables = camelot.read_pdf(
+                    self.pdf_path,
+                    pages=str(page_num + 1),
+                    flavor='lattice',
+                    **TableExtractionConfig.get_lattice_config()
+                )
+                
+                for table in page_tables:
+                    # Camelot 테이블을 DataFrame으로 변환
+                    df = pd.DataFrame(table.data)
+                    if not df.empty:
+                        tables.append(df)
+                        
+            except Exception as e:
+                self.logger.error(f"페이지 {page_num+1} 표 추출 실패: {str(e)}")
+                continue
+                
+        return tables
+    
+    def find_payment_sections(self):
+        payment_sections = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            for pattern in self.markers['payment_section']:
+                if re.search(pattern, text):
+                    payment_sections.append(page_num)
+                    break
+        return payment_sections
+    
+
+    def map_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """컬럼 매핑 및 데이터 타입 변환"""
+        try:
+            # 컬럼 매핑
+            column_mapping = {
+                '구분': ['구분', '종류', '급부종류'],
+                '담보명': ['담보명', '보장명', '급부명'],
+                '지급사유': ['지급사유', '보장사유', '급부사유'],
+                '지급금액': ['지급금액', '보험금', '보장금액']
+            }
+            
+            # 컬럼명 처리
+            df.columns = [col.strip() for col in df.columns]
+            
+            # 매핑 적용
+            for target_col, possible_cols in column_mapping.items():
+                for col in df.columns:
+                    if col in possible_cols:
+                        df = df.rename(columns={col: target_col})
+            
+            # 숫자 데이터 변환
+            if '지급금액' in df.columns:
+                df['지급금액'] = df['지급금액'].apply(
+                    lambda x: re.sub(r'[^\d,.]', '', str(x)) if pd.notnull(x) else '')
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"컬럼 매핑 중 오류: {str(e)}")
+            return df
+    
+
+    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """추출된 표 데이터 정제 (컬럼 구조 유지)"""
+        try:
+            # 기존 컬럼명 변경 로직 제거
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # 필터링 패턴 제거 (원본 데이터 보존)
+            df = df.reset_index(drop=True)
+            
+            # 문자열 정제만 수행
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].str.replace('\n', ' ', regex=False)
+                    df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
+                    df[col] = df[col].replace(['', 'nan', 'None'], None)
+                    
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"표 정제 중 오류: {str(e)}")
+            return df
+        
+    def save_results(self, tables: List[pd.DataFrame], page_numbers: List[int]) -> Dict[str, str]:
+        """결과를 XML과 Excel로 저장"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"tables_{timestamp}"
+        
+        # XML 생성 및 저장
+        root = self.create_xml(tables, page_numbers)
+        xml_str = ET.tostring(root, encoding='unicode')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        
+        xml_path = self.xml_dir / f"{base_filename}.xml"
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
+            
+        # Excel 생성 및 저장
+        all_data = []
+        for df, page_num in zip(tables, page_numbers):
+            df = df.copy()
+            df['페이지'] = page_num
+            all_data.append(df)
+            
+        if all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            excel_path = self.excel_dir / f"{base_filename}.xlsx"
+            combined_df.to_excel(excel_path, index=False, engine='openpyxl')
+        
+        return {
+            'xml_path': str(xml_path),
+            'excel_path': str(excel_path)
+        }
+    
+    def detect_strike_through(self, page: fitz.Page) -> List[Dict]:
+        """취소선이 포함된 텍스트 영역 추출"""
+        strike_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["flags"] & fitz.TEXT_STRIKE_THROUGH:  # 취소선 플래그 확인
+                        strike_blocks.append({
+                            "text": span["text"],
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        return strike_blocks
+    
+    def detect_colored_text(self, page: fitz.Page, 
+                       black_threshold: int = 50) -> List[Dict]:
+        """검정색이 아닌 컬러 텍스트 감지 (빨강/파랑/녹색 등)"""
+        colored_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    # RGB 값 추출 (PyMuPDF 기준 0~255 범위)
+                    if 'color' not in span:
+                        continue
+                        
+                    color = span["color"]
+                    r = (color >> 16) & 0xff  # Red 채널
+                    g = (color >> 8) & 0xff   # Green 채널
+                    b = color & 0xff          # Blue 채널
+                    
+                    # 검정색 판별 조건 (모든 채널이 임계값 미만)
+                    is_black = all([c < black_threshold for c in (r, g, b)])
+                    
+                    # 검정이 아니고, 실제 텍스트가 있는 경우만 처리
+                    if not is_black and span["text"].strip():
+                        colored_blocks.append({
+                            "text": span["text"],
+                            "color": (r, g, b),  # RGB 값 저장
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        
+        return colored_blocks
+    
+    def _process_table_with_highlights(self, table, highlight_regions, page_height, 
+                                       page_num, parsing_range, sections_info=None) -> pd.DataFrame:
+        try:
+            # 1. 기본 테이블 처리
+            df = self.clean_table(table)
+            if df.empty:
+                return df, []  # 하이라이트 정보 반환 추가
+
+            # 2. 색상 텍스트 및 음영 감지
+            page = self.doc[page_num]
+            colored_texts = self.detect_colored_text(page)
+            highlight_matrix = []
+
+            # 3. 변경사항 컬럼 초기화 및 하이라이트 매트릭스 생성
+            df['변경사항'] = ''
+            for row_idx, row in df.iterrows():
+                row_highlights = []
+                for col_idx, cell in enumerate(row):
+                    # 색상 텍스트 매칭 검사
+                    is_highlighted = any(
+                        colored['text'].strip() in str(cell)
+                        for colored in colored_texts
+                    )
+                    row_highlights.append(is_highlighted)
+                    if is_highlighted:
+                        df.iat[row_idx, col_idx] = f"{cell} [색상]"  # 셀 내용에 마킹
+                highlight_matrix.append(row_highlights)
+
+            return df, highlight_matrix  # 하이라이트 정보 반환
+
+        except Exception as e:
+            self.logger.error(f"표 처리 오류: {str(e)}")
+            return pd.DataFrame(), []
+        
+    def detect_colored_areas(self, page: fitz.Page) -> List[Dict]:
+        """음영 영역 감지 (이미지 기반)"""
+        img = self.pdf_to_image(page)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        
+        # 노란색 범위 정의 (H: 20-30, S: 100-255, V: 100-255)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        colored_areas = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            colored_areas.append({
+                "bbox": (x, y, x+w, y+h),
+                "color": "YELLOW"
+            })
+        return colored_areas
+    
+    
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
+        
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
+        
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",  # 또는 다른 적절한 모델
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "start_page" in result and "end_page" in result:
+                # 페이지 번호를 0-인덱스로 변환 (1부터 시작하는 페이지 번호를 받았으므로)
+                validated_start = max(0, result["start_page"] - 1)
+                validated_end = min(len(self.doc) - 1, result["end_page"] - 1)
+                
+                # 범위 검증
+                if validated_start <= validated_end:
+                    return {
+                        "start": validated_start,
+                        "end": validated_end,
+                        "confidence": "high" if result["is_appropriate"] else "medium",
+                        "reason": result.get("reasoning", "LLM 검증 완료")
+                    }
+            
+            # 검증에 실패한 경우 원본 후보 반환
+            self.logger.warning("LLM 검증 결과가 유효하지 않아 원본 후보를 사용합니다")
+            return candidate
+            
+        except Exception as e:
+            self.logger.error(f"LLM 검증 중 오류: {str(e)}")
+            return candidate
+
+    def verify_payment_section_with_llm(self, candidate_page):
+        """보험금 지급 섹션 LLM 검증"""
+        # 후보 페이지와 주변 페이지 샘플링
+        sample_pages = [
+            max(0, candidate_page - 1),
+            candidate_page,
+            min(candidate_page + 1, len(self.doc) - 1)
+        ]
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            if len(text) > 1000:
+                sample_text = f"{text[:800]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '보험금 지급' 섹션의 시작 페이지를 확인해주세요.
+            
+            후보 페이지: {candidate_page + 1}페이지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 페이지가 '보험금 지급' 섹션의 적절한 시작 페이지인가요?
+            2. 만약 아니라면, 어느 페이지가 더 적절한가요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "page": 적절한 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "보험 약관 분석을 수행하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            self.logger.info(f"보험금 지급 섹션 LLM 검증 결과: {result}")
+            
+            # 결과 검증 및 반환
+            if "is_appropriate" in result and "page" in result:
+                # 적절한 페이지 번호 계산 (0-인덱스)
+                validated_page = max(0, min(len(self.doc) - 1, result["page"] - 1))
+                
+                if not result["is_appropriate"]:
+                    self.logger.info(f"LLM 검증으로 보험금 지급 섹션 페이지 변경: {candidate_page + 1} -> {validated_page + 1}")
+                    return validated_page
+            
+            # 검증에 실패하거나 적절한 경우 원본 페이지 반환
+            return candidate_page
+            
+        except Exception as e:
+            self.logger.error(f"보험금 지급 섹션 LLM 검증 중 오류: {str(e)}")
+            return candidate_page
+
+    def _analyze_pdf_structure(self):
+        """PDF 구조 상세 분석"""
+        print("\n=== PDF 구조 분석 ===")
+        self.logger.info("PDF 구조 분석 시작")
+        
+        for page_num in range(len(self.doc)):
+            page = self.doc[page_num]
+            
+            # 페이지의 블록 정보 추출
+            try:
+                blocks = page.get_text("dict")['blocks']
+                
+                print(f"\n페이지 {page_num + 1} - 블록 수: {len(blocks)}")
+                self.logger.info(f"페이지 {page_num + 1} 블록 분석")
+                
+                for block_index, block in enumerate(blocks, 1):
+                    if block['type'] == 0:  # 텍스트 블록
+                        block_text = ''
+                        for line in block['lines']:
+                            line_text = ''.join([span['text'] for span in line['spans']])
+                            block_text += line_text + '\n'
+                        
+                        # 블록 길이가 너무 길면 자르기
+                        block_text = block_text[:500] + '...' if len(block_text) > 500 else block_text
+                        
+                        print(f"  블록 {block_index}:")
+                        print(f"  내용 (일부): {block_text}")
+            
+            except Exception as e:
+                print(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+                self.logger.error(f"페이지 {page_num + 1} 분석 중 오류: {e}")
+
+
+    def analyze(self) -> dict:
+        """PDF 분석 실행"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result = {'clean': '', 'table_count': 0}
+        
+        try:
+            ranges = self.determine_parsing_ranges()
+            if not ranges:
+                return result
+
+            all_tables = []
+            all_highlights = []
+            all_changes = []
+            
+            for parsing_range in ranges:
+                tables = self.extract_tables(parsing_range)
+                for table in tables:
+                    page_num = parsing_range.start_page
+                    page = self.doc[page_num]
+                    
+                    # 표 처리 및 하이라이트 정보 추출
+                    processed_df, highlights = self.process_table(table, page)
+                    
+                    # 변경 유형 감지
+                    changes = []
+                    for row_highlights in highlights:
+                        row_changes = []
+                        for is_highlighted in row_highlights:
+                            if is_highlighted:
+                                # 여기서 변경 유형 판별 로직 추가 가능
+                                # 예: 색상이나 다른 특징으로 added/deleted/modified 판별
+                                row_changes.append('modified')
+                            else:
+                                row_changes.append('')
+                        changes.append(row_changes)
+                    
+                    # 메타데이터 추가
+                    processed_df = self._add_metadata(processed_df, page_num, parsing_range)
+                    
+                    all_tables.append(processed_df)
+                    all_highlights.append(highlights)
+                    all_changes.append(changes)
+
+            if all_tables:
+                # ExcelWriter를 사용하여 결과 저장
+                output_path = self.output_dir / f"보험약관분석_{timestamp}.xlsx"
+                excel_writer = ExcelWriter(str(output_path))
+                
+                # 섹션별로 데이터 작성
+                current_section = None
+                for idx, (df, highlights, changes) in enumerate(zip(all_tables, all_highlights, all_changes)):
+                    # 섹션 변경 확인
+                    section = df['구분'].iloc[0] if '구분' in df.columns else f'Section_{idx+1}'
+                    if section != current_section:
+                        excel_writer.write_section_header(section)
+                        current_section = section
+                    
+                    # 메타데이터 준비
+                    metadata = {
+                        '페이지': df['페이지'].iloc[0] if '페이지' in df.columns else '',
+                        '보험종류': df['보험종류'].iloc[0] if '보험종류' in df.columns else ''
+                    }
+                    
+                    # 표 작성
+                    excel_writer.write_table(
+                        df=df,
+                        highlights=highlights,
+                        change_types=changes,
+                        metadata=metadata
+                    )
+                
+                excel_writer.save()
+                result['clean'] = str(output_path)
+                result['table_count'] = len(all_tables)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"분석 실패: {str(e)}", exc_info=True)
+            return result
+        finally:
+            if hasattr(self, 'doc'):
+                self.doc.close()
+
+
+    def _generate_highlight_matrix(self, df: pd.DataFrame, colored_texts: list) -> list:
+        """HWP 변환 문서의 테이블 구조에 맞춘 하이라이트 매트릭스 생성"""
+        highlight_matrix = []
+        for _, row in df.iterrows():
+            row_highlights = []
+            for cell in row:
+                is_highlighted = any(
+                    colored['text'].strip() in str(cell) 
+                    for colored in colored_texts
+                )
+                row_highlights.append(is_highlighted)
+            highlight_matrix.append(row_highlights)
+        return highlight_matrix
+
+    def _add_metadata(self, df: pd.DataFrame, page_num: int, parsing_range: ParsingRange) -> pd.DataFrame:
+        """HWP 변환 문서의 메타데이터 추가"""
+        df.insert(0, '추출페이지', page_num + 1)
+        df.insert(1, '문서구분', parsing_range.section_type)
+        
+        if parsing_range.insurance_type:
+            df.insert(2, '보험종류', parsing_range.insurance_type)
+            
+        return df
+
+    def find_insurance_types(self) -> List[Tuple[int, str]]:
+        """종별([1종], [2종] 등) 마커가 있는 페이지 찾기"""
+        type_pages = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            matches = re.finditer(self.markers['insurance_types'], text)
+            for match in matches:
+                type_num = match.group(1)
+                type_pages.append((page_num, f"[{type_num}종]"))
+            
+        # 종 번호와 페이지 번호로 정렬
+        sorted_pages = sorted(type_pages, 
+                            key=lambda x: (int(re.search(r'\[(\d+)종\]', x[1]).group(1)), x[0]))
+        
+        if sorted_pages:
+            self.logger.info(f"발견된 보험종류: {[t[1] for t in sorted_pages]}")
+        
+        return sorted_pages
+    
+    
+    # pdf_analyzer.py 내 extract_tables() 수정
+    # extract_tables() 메서드 수정
+    def extract_tables(self, parsing_range: ParsingRange) -> List[pd.DataFrame]:
+        """특정 페이지 범위에서 표 추출"""
+        tables = []
+        for page_num in range(parsing_range.start_page, parsing_range.end_page + 1):
+            try:
+                page_tables = camelot.read_pdf(
+                    self.pdf_path,
+                    pages=str(page_num + 1),
+                    flavor='lattice',
+                    **TableExtractionConfig.get_lattice_config()
+                )
+                
+                for table in page_tables:
+                    # Camelot 테이블을 DataFrame으로 변환
+                    df = pd.DataFrame(table.data)
+                    if not df.empty:
+                        tables.append(df)
+                        
+            except Exception as e:
+                self.logger.error(f"페이지 {page_num+1} 표 추출 실패: {str(e)}")
+                continue
+                
+        return tables
+    
+    def find_payment_sections(self):
+        payment_sections = []
+        for page_num in range(len(self.doc)):
+            text = self.doc[page_num].get_text()
+            for pattern in self.markers['payment_section']:
+                if re.search(pattern, text):
+                    payment_sections.append(page_num)
+                    break
+        return payment_sections
+    
+
+    def map_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """컬럼 매핑 및 데이터 타입 변환"""
+        try:
+            # 컬럼 매핑
+            column_mapping = {
+                '구분': ['구분', '종류', '급부종류'],
+                '담보명': ['담보명', '보장명', '급부명'],
+                '지급사유': ['지급사유', '보장사유', '급부사유'],
+                '지급금액': ['지급금액', '보험금', '보장금액']
+            }
+            
+            # 컬럼명 처리
+            df.columns = [col.strip() for col in df.columns]
+            
+            # 매핑 적용
+            for target_col, possible_cols in column_mapping.items():
+                for col in df.columns:
+                    if col in possible_cols:
+                        df = df.rename(columns={col: target_col})
+            
+            # 숫자 데이터 변환
+            if '지급금액' in df.columns:
+                df['지급금액'] = df['지급금액'].apply(
+                    lambda x: re.sub(r'[^\d,.]', '', str(x)) if pd.notnull(x) else '')
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"컬럼 매핑 중 오류: {str(e)}")
+            return df
+    
+
+    def clean_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """추출된 표 데이터 정제 (컬럼 구조 유지)"""
+        try:
+            # 기존 컬럼명 변경 로직 제거
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            # 필터링 패턴 제거 (원본 데이터 보존)
+            df = df.reset_index(drop=True)
+            
+            # 문자열 정제만 수행
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].str.replace('\n', ' ', regex=False)
+                    df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
+                    df[col] = df[col].replace(['', 'nan', 'None'], None)
+                    
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"표 정제 중 오류: {str(e)}")
+            return df
+        
+    def save_results(self, tables: List[pd.DataFrame], page_numbers: List[int]) -> Dict[str, str]:
+        """결과를 XML과 Excel로 저장"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"tables_{timestamp}"
+        
+        # XML 생성 및 저장
+        root = self.create_xml(tables, page_numbers)
+        xml_str = ET.tostring(root, encoding='unicode')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        
+        xml_path = self.xml_dir / f"{base_filename}.xml"
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
+            
+        # Excel 생성 및 저장
+        all_data = []
+        for df, page_num in zip(tables, page_numbers):
+            df = df.copy()
+            df['페이지'] = page_num
+            all_data.append(df)
+            
+        if all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            excel_path = self.excel_dir / f"{base_filename}.xlsx"
+            combined_df.to_excel(excel_path, index=False, engine='openpyxl')
+        
+        return {
+            'xml_path': str(xml_path),
+            'excel_path': str(excel_path)
+        }
+    
+    def detect_strike_through(self, page: fitz.Page) -> List[Dict]:
+        """취소선이 포함된 텍스트 영역 추출"""
+        strike_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["flags"] & fitz.TEXT_STRIKE_THROUGH:  # 취소선 플래그 확인
+                        strike_blocks.append({
+                            "text": span["text"],
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        return strike_blocks
+    
+    def detect_colored_text(self, page: fitz.Page, 
+                       black_threshold: int = 50) -> List[Dict]:
+        """검정색이 아닌 컬러 텍스트 감지 (빨강/파랑/녹색 등)"""
+        colored_blocks = []
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    # RGB 값 추출 (PyMuPDF 기준 0~255 범위)
+                    if 'color' not in span:
+                        continue
+                        
+                    color = span["color"]
+                    r = (color >> 16) & 0xff  # Red 채널
+                    g = (color >> 8) & 0xff   # Green 채널
+                    b = color & 0xff          # Blue 채널
+                    
+                    # 검정색 판별 조건 (모든 채널이 임계값 미만)
+                    is_black = all([c < black_threshold for c in (r, g, b)])
+                    
+                    # 검정이 아니고, 실제 텍스트가 있는 경우만 처리
+                    if not is_black and span["text"].strip():
+                        colored_blocks.append({
+                            "text": span["text"],
+                            "color": (r, g, b),  # RGB 값 저장
+                            "bbox": fitz.Rect(span["bbox"])
+                        })
+        
+        return colored_blocks
+    
+    def _process_table_with_highlights(self, table, highlight_regions, page_height, 
+                                       page_num, parsing_range, sections_info=None) -> pd.DataFrame:
+        try:
+            # 1. 기본 테이블 처리
+            df = self.clean_table(table)
+            if df.empty:
+                return df, []  # 하이라이트 정보 반환 추가
+
+            # 2. 색상 텍스트 및 음영 감지
+            page = self.doc[page_num]
+            colored_texts = self.detect_colored_text(page)
+            highlight_matrix = []
+
+            # 3. 변경사항 컬럼 초기화 및 하이라이트 매트릭스 생성
+            df['변경사항'] = ''
+            for row_idx, row in df.iterrows():
+                row_highlights = []
+                for col_idx, cell in enumerate(row):
+                    # 색상 텍스트 매칭 검사
+                    is_highlighted = any(
+                        colored['text'].strip() in str(cell)
+                        for colored in colored_texts
+                    )
+                    row_highlights.append(is_highlighted)
+                    if is_highlighted:
+                        df.iat[row_idx, col_idx] = f"{cell} [색상]"  # 셀 내용에 마킹
+                highlight_matrix.append(row_highlights)
+
+            return df, highlight_matrix  # 하이라이트 정보 반환
+
+        except Exception as e:
+            self.logger.error(f"표 처리 오류: {str(e)}")
+            return pd.DataFrame(), []
+        
+    def detect_colored_areas(self, page: fitz.Page) -> List[Dict]:
+        """음영 영역 감지 (이미지 기반)"""
+        img = self.pdf_to_image(page)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        
+        # 노란색 범위 정의 (H: 20-30, S: 100-255, V: 100-255)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        colored_areas = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            colored_areas.append({
+                "bbox": (x, y, x+w, y+h),
+                "color": "YELLOW"
+            })
+        return colored_areas
+    
+    
+    def verify_with_llm(self, candidate):
+        """Groq LLM을 사용한 효율적인 섹션 범위 검증"""
+        start_page = candidate["start"]
+        end_page = candidate["end"]
+        
+        # 샘플 페이지 선택
+        if end_page - start_page > 10:
+            sample_pages = [
+                start_page,
+                start_page + 1,
+                (start_page + end_page) // 2,
+                end_page - 1,
+                end_page
+            ]
+        else:
+            sample_pages = [start_page, end_page]
+        
+        # 중복 제거 및 정렬
+        sample_pages = sorted(set(sample_pages))
+        
+        # 문맥 생성
+        context = []
+        for page_num in sample_pages:
+            text = self.doc[page_num].get_text()
+            # 페이지별로 처음 500자와 마지막 500자만 포함 (효율성)
+            if len(text) > 1000:
+                sample_text = f"{text[:500]}... [중략] ...{text[-500:]}"
+            else:
+                sample_text = text
+            
+            context.append(f"--- 페이지 {page_num + 1} ---\n{sample_text}")
+        
+        # Groq API 호출
+        try:
+            import os
+            import json
+            from groq import Groq
+            
+            client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            
+            prompt = f"""
+            다음은 보험 약관의 일부 페이지 텍스트입니다. '상해및질병관련특별약관' 섹션의 시작과 끝 페이지를 확인해주세요.
+            
+            후보 범위: {start_page + 1}페이지부터 {end_page + 1}페이지까지
+            
+            샘플 텍스트:
+            {''.join(context)}
+            
+            질문:
+            1. 이 범위가 '상해및질병관련특별약관' 섹션의 적절한 시작과 끝 페이지인가요?
+            2. 만약 아니라면, 어떻게 수정해야 할까요?
+            3. 결정에 대한 근거는 무엇인가요?
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "is_appropriate": true/false,
+                "start_page": 시작 페이지 번호(1부터 시작),
+                "end_page": 종료 페이지 번호(1부터 시작),
+                "reasoning": "판단 근거"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                validated_page = max(0, min(len(self.doc) - 1, result["

@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 # PDF 처리 관련
 PyMuPDF>=1.23.7
-camelot-py[cv]>=0.11.0
+camelot-py==0.11.0
 pdfplumber>=0.7.0
 
 # 데이터 처리

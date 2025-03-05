@@ -4,6 +4,7 @@ import fitz  # PyMuPDF
 import pandas as pd
 import re
 from datetime import datetime
+import tempfile
 
 # 페이지 설정
 st.set_page_config(page_title="PDF 보장내용 테스트", layout="wide")
@@ -23,8 +24,11 @@ if uploaded_files:
         for pdf_file in uploaded_files:
             st.subheader(f"파일 처리 중: {pdf_file.name}")
             
-            # 임시 파일로 저장
-            temp_path = f"/tmp/{pdf_file.name}"
+            # 임시 파일 경로 생성
+            temp_dir = tempfile.gettempdir()
+            file_name = pdf_file.name
+            temp_path = os.path.join(temp_dir, file_name)
+            
             with open(temp_path, "wb") as f:
                 f.write(pdf_file.getvalue())
             
@@ -106,3 +110,32 @@ if uploaded_files:
             )
         else:
             st.info("변경사항이 발견되지 않았습니다.")
+
+def process_pdf(pdf_document):
+    # "나. 보험금" 섹션 찾기
+    insurance_payment_section = None
+    for page_num in range(len(pdf_document)):
+        page_text = pdf_document[page_num].get_text()
+        if "나. 보험금" in page_text:
+            insurance_payment_section = page_num
+            break
+    
+    # "나. 보험금"이 없을 경우 대체 로직
+    if insurance_payment_section is None:
+        # 상해관련 특별약관과 선택특약이 함께 있는 페이지 찾기
+        for page_num in range(len(pdf_document)):
+            page_text = pdf_document[page_num].get_text()
+            page_text_normalized = ''.join(page_text.split())  # 띄어쓰기 제거
+            
+            # 다양한 형태의 "상해및질병관련특별약관" 검색
+            has_special_clause = any(keyword in page_text_normalized for keyword in 
+                                    ["상해및질병관련특별약관", "상해및질병관련", "상해질병관련특별약관"])
+            
+            # 선택특약 검색
+            has_optional_clause = "선택특약" in page_text
+            
+            if has_special_clause and has_optional_clause:
+                insurance_payment_section = page_num
+                break
+    
+    return insurance_payment_section, other_sections
