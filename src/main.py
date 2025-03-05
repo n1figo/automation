@@ -1,8 +1,13 @@
 from capture import capture_full_page, save_image
 from excel_handler import create_excel_with_image
+import os
 
 def main():
     url = "https://www.kbinsure.co.kr/CG302130001.ec"
+    
+    # 필요한 디렉토리 생성
+    os.makedirs("/workspaces/automation/data/input", exist_ok=True)
+    os.makedirs("/workspaces/automation/data/output", exist_ok=True)
     
     # 웹페이지 캡처
     full_page_image = capture_full_page(url)

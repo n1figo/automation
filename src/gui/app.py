@@ -10,6 +10,13 @@ from pathlib import Path
 import pandas as pd
 import sys
 from PIL import Image, ImageTk
+import os
+import re
+import tkinter as tk
+from tkinter import filedialog, scrolledtext
+from datetime import datetime
+import fitz  # PyMuPDF
+import openpyxl
 # 실제 애플리케이션에 필요한 모듈들을 import
 # from src.utils.excel_writer import ExcelWriter
 # from src.processors.xml_processor import XMLProcessor
@@ -21,8 +28,13 @@ from PIL import Image, ImageTk
 ctk.set_appearance_mode("light")  # 테마 설정: "light" 또는 "dark"
 ctk.set_default_color_theme("blue")  # 기본 색상 테마
 
-class PDFAnalyzerGUI:
-    def __init__(self):
+class PDFAnalyzerGUI(tk.Frame):
+    def __init__(self, master=None):
+        super().__init__(master)
+        self.master = master
+        self.master.title("PDF 분석기")
+        self.pack(fill=tk.BOTH, expand=True)
+        
         self.root = ctk.CTk()
         self.root.title("KB손해보험 상품개정 자동화 서비스")
         self.root.geometry("1000x700")
@@ -345,6 +357,12 @@ class PDFAnalyzerGUI:
             state="disabled"
         )
         self.process_button.pack()
+
+        # 보장내용 테스트 버튼 추가
+        self.test_coverage_button = tk.Button(button_frame, text="보장내용 테스트", 
+                                            command=self.test_coverage, bg="#ffc107", 
+                                            fg="black", width=15, height=2)
+        self.test_coverage_button.pack(side=tk.LEFT, padx=5)
     
     def create_log_area(self):
         """로그 영역 생성"""
@@ -378,6 +396,13 @@ class PDFAnalyzerGUI:
         
         # 초기 로그 메시지
         self.log_message("시스템이 준비되었습니다. 파일을 선택하고 분석을 시작하세요.")
+
+        # 로그 출력 영역 (없으면 추가)
+        self.log_frame = tk.LabelFrame(self, text="로그")
+        self.log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.log_text = scrolledtext.ScrolledText(self.log_frame, height=10)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
     
     def create_footer(self):
         """푸터 영역 생성"""
@@ -406,7 +431,7 @@ class PDFAnalyzerGUI:
     def browse_file(self, string_var, filetypes):
         """파일 탐색기 실행"""
         file_path = filedialog.askopenfilename(title="파일 선택", filetypes=filetypes)
-        if file_path:
+        if (file_path):
             string_var.set(file_path)
             self.check_process_button_state()
 
@@ -504,6 +529,159 @@ class PDFAnalyzerGUI:
     def run(self):
         """애플리케이션 실행"""
         self.root.mainloop()
+
+    def test_coverage(self):
+        """보장내용 테스트 기능 실행"""
+        self.log("보장내용 테스트를 시작합니다...")
+        
+        # 여러 PDF 파일 선택
+        file_paths = filedialog.askopenfilenames(
+            initialdir="/workspaces/automation/data/input",
+            title="분석할 PDF 파일들을 선택하세요",
+            filetypes=[("PDF 파일", "*.pdf")]
+        )
+        
+        if not file_paths:
+            self.log("파일이 선택되지 않았습니다.")
+            return
+        
+        self.log(f"{len(file_paths)}개 파일이 선택되었습니다.")
+        
+        # 엑셀 결과 파일 준비
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_file = f"/workspaces/automation/data/output/보장내용_테스트_결과_{now}.xlsx"
+        workbook = openpyxl.Workbook()
+        
+        # 각 파일 처리
+        for pdf_path in file_paths:
+            self.process_coverage_file(pdf_path, workbook)
+        
+        # 결과 저장
+        workbook.save(result_file)
+        self.log(f"모든 처리가 완료되었습니다. 결과 파일: {result_file}")
+
+    def process_coverage_file(self, pdf_path, workbook):
+        """각 PDF 파일 처리"""
+        file_name = os.path.basename(pdf_path)
+        self.log(f"파일 처리 중: {file_name}")
+        
+        # 시트 생성 (파일명으로)
+        sheet_name = file_name[:31]  # Excel 시트명 최대 길이 제한
+        if sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+        else:
+            sheet = workbook.create_sheet(title=sheet_name)
+            # 헤더 설정
+            sheet["A1"] = "페이지"
+            sheet["B1"] = "섹션"
+            sheet["C1"] = "파싱 범위"
+            sheet["D1"] = "내용"
+            sheet["E1"] = "변경사항"
+        
+        try:
+            # PDF 로드
+            pdf_document = fitz.open(pdf_path)
+            self.log(f"총 {len(pdf_document)} 페이지 로드됨")
+            
+            # 1. "나. 보험금" 문구가 있는 페이지 찾기
+            insurance_pages = []
+            for page_num in range(len(pdf_document)):
+                page = pdf_document[page_num]
+                text = page.get_text()
+                if "나. 보험금" in text:
+                    insurance_pages.append(page_num)
+                    self.log(f"'나. 보험금' 문구 발견: 페이지 {page_num + 1}")
+            
+            if not insurance_pages:
+                self.log("'나. 보험금' 문구를 찾을 수 없습니다.")
+                return
+            
+            # 2. 섹션 탐색 및 파싱 범위 설정
+            parsing_ranges = self.find_parsing_ranges(pdf_document, insurance_pages)
+            
+            # 3. 강조색/색깔 글자 감지 및 엑셀에 기록
+            row = 2  # 데이터 시작 행 (1행은 헤더)
+            for page_num, section_info in parsing_ranges.items():
+                page = pdf_document[page_num]
+                highlights = self.detect_highlights(page)
+                
+                if highlights:
+                    self.log(f"페이지 {page_num + 1}에서 강조된 내용 발견")
+                    for hl in highlights:
+                        sheet[f"A{row}"] = page_num + 1
+                        sheet[f"B{row}"] = section_info["section"]
+                        sheet[f"C{row}"] = section_info["range"]
+                        sheet[f"D{row}"] = hl["text"]
+                        sheet[f"E{row}"] = "있음"
+                        row += 1
+        
+        except Exception as e:
+            self.log(f"오류 발생: {str(e)}")
+        finally:
+            if 'pdf_document' in locals():
+                pdf_document.close()
+
+    def find_parsing_ranges(self, pdf_document, insurance_pages):
+        """섹션 탐색 후 파싱 범위 설정"""
+        ranges = {}
+        
+        for page_num in insurance_pages:
+            # 현재 페이지부터 시작해서 섹션 범위 찾기
+            start_page = page_num
+            section_name = "보험금 섹션"
+            
+            # 다음 섹션 시작점 찾기 (예: "다. 다음섹션")
+            end_page = None
+            for p in range(start_page + 1, len(pdf_document)):
+                text = pdf_document[p].get_text()
+                if re.search(r'[다-힣]\.\s+\w+', text):  # 한글 문자 + 점 + 공백 + 단어
+                    end_page = p - 1
+                    break
+            
+            if end_page is None:
+                end_page = len(pdf_document) - 1
+            
+            range_text = f"{start_page + 1}~{end_page + 1}"
+            self.log(f"파싱 범위 설정: {section_name}, 페이지 {range_text}")
+            
+            ranges[page_num] = {
+                "section": section_name,
+                "range": range_text,
+                "start": start_page,
+                "end": end_page
+            }
+        
+        return ranges
+
+    def detect_highlights(self, page):
+        """페이지에서 강조색이나 색깔 글자 감지"""
+        highlights = []
+        
+        # 텍스트 스팬 가져오기
+        spans = page.get_text("dict")["blocks"]
+        
+        for block in spans:
+            if "lines" in block:
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        # 색상 정보 확인 (0이 아닌 rgb 값이 있는지)
+                        color = span.get("color")
+                        if color and color != 0:  # 색상이 있는 텍스트
+                            highlights.append({
+                                "text": span["text"],
+                                "rect": span["bbox"],
+                                "color": color
+                            })
+        
+        return highlights
+
+    def log(self, message):
+        """로그 메시지 추가"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_message = f"[{timestamp}] {message}"
+        self.log_text.insert(tk.END, log_message + "\n")
+        self.log_text.see(tk.END)
+        print(log_message)  # 콘솔에도 출력
 
 
 if __name__ == "__main__":
