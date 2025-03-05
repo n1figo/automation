@@ -45,6 +45,25 @@ if uploaded_files:
                         insurance_pages.append(page_num)
                         st.write(f"'나. 보험금' 문구 발견: 페이지 {page_num + 1}")
                 
+                # 만약 "나. 보험금"이 발견되지 않았다면 대체 로직 사용
+                if not insurance_pages:
+                    st.write("'나. 보험금' 문구가 없어 대체 방법으로 검색합니다...")
+                    for page_num in range(len(pdf_document)):
+                        page = pdf_document[page_num]
+                        text = page.get_text()
+                        text_normalized = ''.join(text.split())  # 띄어쓰기 제거
+                        
+                        # 다양한 형태의 "상해및질병관련특별약관" 검색
+                        has_special_clause = any(keyword in text_normalized for keyword in 
+                                              ["상해및질병관련특별약관", "상해및질병관련", "상해질병관련특별약관"])
+                        
+                        # 선택특약 검색
+                        has_optional_clause = "선택특약" in text
+                        
+                        if has_special_clause and has_optional_clause:
+                            insurance_pages.append(page_num)
+                            st.write(f"상해 및 질병 관련 특별약관과 선택특약 발견: 페이지 {page_num + 1}")
+                
                 # 섹션 탐색 및 파싱 범위 설정
                 for page_num in insurance_pages:
                     # 현재 페이지부터 시작해서 섹션 범위 찾기
@@ -110,32 +129,3 @@ if uploaded_files:
             )
         else:
             st.info("변경사항이 발견되지 않았습니다.")
-
-def process_pdf(pdf_document):
-    # "나. 보험금" 섹션 찾기
-    insurance_payment_section = None
-    for page_num in range(len(pdf_document)):
-        page_text = pdf_document[page_num].get_text()
-        if "나. 보험금" in page_text:
-            insurance_payment_section = page_num
-            break
-    
-    # "나. 보험금"이 없을 경우 대체 로직
-    if insurance_payment_section is None:
-        # 상해관련 특별약관과 선택특약이 함께 있는 페이지 찾기
-        for page_num in range(len(pdf_document)):
-            page_text = pdf_document[page_num].get_text()
-            page_text_normalized = ''.join(page_text.split())  # 띄어쓰기 제거
-            
-            # 다양한 형태의 "상해및질병관련특별약관" 검색
-            has_special_clause = any(keyword in page_text_normalized for keyword in 
-                                    ["상해및질병관련특별약관", "상해및질병관련", "상해질병관련특별약관"])
-            
-            # 선택특약 검색
-            has_optional_clause = "선택특약" in page_text
-            
-            if has_special_clause and has_optional_clause:
-                insurance_payment_section = page_num
-                break
-    
-    return insurance_payment_section, other_sections
