@@ -109,7 +109,15 @@ def identify_type_start_pages(pdf_document, parsing_start_page, total_pages):
     return type_starts
 
 # 종별 범위 계산 함수
-def calculate_type_ranges(type_starts, total_pages):
+def calculate_type_ranges(type_starts, total_pages, pdf_document):
+    # 종별 범위 종료를 나타내는 제목 패턴들
+    end_section_patterns = [
+        r'배상책임특별약관',  # 배상책임특별약관
+        r'기타특별약관',      # 기타특별약관
+        r'제도성 특별약관',   # 제도성 특별약관도 종료 패턴으로 추가
+        r'특별약관\s*제도성'  # 다른 형태의 제도성 표현도 추가
+    ]
+    
     # 시작 페이지 기준으로 정렬
     sorted_types = sorted(type_starts.items(), key=lambda x: x[1]["page"])
     
@@ -117,18 +125,47 @@ def calculate_type_ranges(type_starts, total_pages):
     for i, (type_key, info) in enumerate(sorted_types):
         start_page = info["page"]
         
-        # 마지막 종이 아니면 다음 종의 시작 페이지 - 1이 종료 페이지
+        # 기본적으로 다음 종의 시작 페이지 - 1 또는 문서 끝을 범위 종료로 설정
         if i < len(sorted_types) - 1:
-            end_page = sorted_types[i+1][1]["page"] - 1
+            default_end_page = sorted_types[i+1][1]["page"] - 1
         else:
-            # 마지막 종은 문서 끝까지
-            end_page = total_pages
+            default_end_page = total_pages
         
+        # 해당 종별 범위 내에서 종료 패턴 검색
+        end_page = default_end_page
+        found_end_pattern = False
+        pattern_found = None
+        
+        # 시작 페이지부터 기본 종료 페이지까지 검색
+        search_start = start_page - 1  # 페이지 번호를 인덱스로 변환
+        
+        # 마지막 종인 경우 종료 패턴을 더 집중적으로 검색
+        if i == len(sorted_types) - 1:  # 마지막 종인 경우
+            for page_num in range(search_start, default_end_page):
+                page = pdf_document[page_num]
+                text = page.get_text()
+                
+                # 종료 패턴이 발견되면 해당 페이지를 범위 종료로 설정
+                for pattern in end_section_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        # 패턴이 발견된 페이지를 종료 페이지로 설정
+                        end_page = page_num  # 이 페이지가 마지막 페이지
+                        found_end_pattern = True
+                        pattern_found = match.group(0)
+                        break
+                
+                if found_end_pattern:
+                    break
+        
+        # 종별 범위 저장 (시작, 종료, 종료 패턴 발견 여부 등)
         type_ranges[type_key] = {
             "start_page": start_page,
-            "end_page": end_page,
+            "end_page": end_page + 1,  # 페이지 인덱스를 페이지 번호로 변환
             "confidence": info["confidence"],
-            "features": info["features"]
+            "features": info["features"],
+            "end_by_pattern": found_end_pattern,  # 패턴으로 종료되었는지 여부
+            "end_pattern": pattern_found if found_end_pattern else None  # 발견된 종료 패턴
         }
     
     return type_ranges
@@ -270,12 +307,15 @@ else:
                                 st.write("종별 페이지 범위 계산 중...")
                                 file_result["상세 로그"].append("종별 페이지 범위 계산 중...")
                                 
-                                type_ranges = calculate_type_ranges(type_starts, total_pages)
+                                type_ranges = calculate_type_ranges(type_starts, total_pages, pdf_document)
                                 file_result["종별_범위"] = type_ranges
                                 
                                 for type_key, range_info in type_ranges.items():
-                                    st.write(f"'{type_key}' 범위: {range_info['start_page']}~{range_info['end_page']}페이지")
-                                    file_result["상세 로그"].append(f"'{type_key}' 범위: {range_info['start_page']}~{range_info['end_page']}페이지")
+                                    end_msg = f"'{type_key}' 범위: {range_info['start_page']}~{range_info['end_page']}페이지"
+                                    if range_info["end_by_pattern"]:
+                                        end_msg += f" (종료 패턴: '{range_info['end_pattern']}')"
+                                    st.write(end_msg)
+                                    file_result["상세 로그"].append(end_msg)
                             else:
                                 st.write("종별 시작 페이지를 식별할 수 없습니다.")
                                 file_result["상세 로그"].append("종별 시작 페이지를 식별할 수 없습니다.")
@@ -455,7 +495,10 @@ else:
                     if result["종별_범위"]:
                         ranges_arr = []
                         for type_key, range_info in result["종별_범위"].items():
-                            ranges_arr.append(f"{type_key}: {range_info['start_page']}~{range_info['end_page']}")
+                            range_text = f"{type_key}: {range_info['start_page']}~{range_info['end_page']}"
+                            if range_info["end_by_pattern"]:
+                                range_text += f" (종료: {range_info['end_pattern']})"
+                            ranges_arr.append(range_text)
                         type_ranges_str = "; ".join(ranges_arr)
                     else:
                         type_ranges_str = "없음"
