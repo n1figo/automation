@@ -76,50 +76,24 @@ else:
                         total_pages = len(pdf_document)
                         st.write(f"총 {total_pages}페이지 로드됨")
                         
-                        # 1. "나. 보험금" 또는 "나. 보험금 지급" 검색하여 파싱 시작 페이지 찾기
+                        # 1. "나. 보험금" 검색하여 파싱 시작 페이지 찾기
                         parsing_start_page = None
                         for page_num in range(total_pages):
                             page = pdf_document[page_num]
                             text = page.get_text()
-                            
-                            # 1-1. "나. 보험금" 검색
                             if "나. 보험금" in text:
                                 parsing_start_page = page_num
                                 file_result["나. 보험금 페이지"].append(page_num + 1)
                                 st.write(f"'나. 보험금' 문구 발견: 페이지 {page_num + 1}")
                                 file_result["상세 로그"].append(f"'나. 보험금' 문구 발견: 페이지 {page_num + 1}")
+                                # 첫 번째 발견하면 중단 (일반적으로 가장 앞에 나오는 것이 기준)
                                 break
-                            
-                            # 1-2. "나. 보험금 지급" 검색
-                            elif "나. 보험금 지급" in text:
-                                parsing_start_page = page_num
-                                file_result["나. 보험금 페이지"].append(page_num + 1)
-                                st.write(f"'나. 보험금 지급' 문구 발견: 페이지 {page_num + 1}")
-                                file_result["상세 로그"].append(f"'나. 보험금 지급' 문구 발견: 페이지 {page_num + 1}")
-                                break
-
-                        # 파싱 시작 페이지를 찾지 못한 경우 선택약관/선택특약과 상해관련특별약관이 함께 있는 페이지 검색
-                        if parsing_start_page is None:
-                            for page_num in range(total_pages):
-                                page = pdf_document[page_num]
-                                text = page.get_text()
-                                text_normalized = ''.join(text.split())  # 띄어쓰기 제거
-                                
-                                # 선택약관/선택특약과 상해관련특별약관이 모두 포함된 페이지 찾기
-                                has_optional_clause = "선택약관" in text or "선택특약" in text
-                                has_injury_clause = "상해관련특별약관" in text_normalized and "상해및질병관련특별약관" not in text_normalized
-                                
-                                if has_optional_clause and has_injury_clause:
-                                    parsing_start_page = page_num
-                                    st.write(f"'선택약관/선택특약'과 '상해관련특별약관' 발견: 페이지 {page_num + 1}")
-                                    file_result["상세 로그"].append(f"'선택약관/선택특약'과 '상해관련특별약관' 발견: 페이지 {page_num + 1}")
-                                    break
-
-                        # 여전히 파싱 시작 페이지를 찾지 못한 경우 첫 페이지로 설정
+                        
+                        # 파싱 시작 페이지를 찾지 못한 경우 전체 문서를 대상으로 함
                         if parsing_start_page is None:
                             parsing_start_page = 0
-                            st.warning("시작 페이지를 찾을 수 없어 첫 페이지부터 검색합니다.")
-                            file_result["상세 로그"].append("시작 페이지를 찾을 수 없어 첫 페이지부터 검색합니다.")
+                            st.warning("'나. 보험금' 문구를 찾을 수 없어 첫 페이지부터 검색합니다.")
+                            file_result["상세 로그"].append("'나. 보험금' 문구를 찾을 수 없어 첫 페이지부터 검색합니다.")
                         
                         # 2. 파싱 시작 페이지부터 검색
                         # 순서: 상해관련특별약관 -> 질병관련특별약관 -> 상해및질병관련특별약관
