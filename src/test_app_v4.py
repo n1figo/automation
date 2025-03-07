@@ -212,6 +212,54 @@ def detect_highlights_with_opencv(pdf_document, page_num):
         }
     }
 
+# 로그 기록 함수 추가
+def log_results(analysis_results):
+    """테스트 결과를 로그 파일에 기록하는 함수"""
+    # 로그 폴더 확인/생성
+    log_folder = "/workspaces/automation/test_log"
+    if not os.path.exists(log_folder):
+        os.makedirs(log_folder)
+        st.info(f"로그 폴더를 생성했습니다: {log_folder}")
+    
+    # 로그 파일명 설정 (날짜별 파일)
+    log_filename = os.path.join(log_folder, f"test_log.txt")
+    
+    # 현재 시간
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 로그 기록 (기존 파일에 추가)
+    with open(log_filename, 'a', encoding='utf-8') as log_file:
+        log_file.write(f"\n\n===== 테스트 실행: {current_time} =====\n")
+        
+        for result in analysis_results:
+            log_file.write(f"\n파일명: {result['파일명']}\n")
+            log_file.write(f"처리 상태: {result['처리 상태']}\n")
+            log_file.write(f"나. 보험금 페이지: {', '.join(map(str, result['나. 보험금 페이지'])) if result['나. 보험금 페이지'] else '없음'}\n")
+            
+            # 종별 범위 정보
+            if result["종별_범위"]:
+                log_file.write("종별 범위:\n")
+                for type_key, range_info in result["종별_범위"].items():
+                    log_file.write(f"  {type_key}: {range_info['start_page']}~{range_info['end_page']}페이지\n")
+            else:
+                log_file.write("종별 범위: 없음\n")
+            
+            # 특별약관 정보
+            log_file.write(f"상해관련특별약관 페이지: {', '.join(map(str, result['상해관련특별약관 페이지'])) if result['상해관련특별약관 페이지'] else '없음'}\n")
+            log_file.write(f"질병관련특별약관 페이지: {', '.join(map(str, result['질병관련특별약관 페이지'])) if result['질병관련특별약관 페이지'] else '없음'}\n")
+            
+            # 강조색 및 취소선
+            log_file.write(f"강조색 있는 페이지: {', '.join(map(str, result['강조색 있는 페이지'])) if result['강조색 있는 페이지'] else '없음'}\n")
+            log_file.write(f"취소선 있는 페이지: {', '.join(map(str, result['취소선 있는 페이지'])) if result['취소선 있는 페이지'] else '없음'}\n")
+            
+            # 구분선 추가
+            log_file.write("--------------------------------------------------\n")
+        
+        log_file.write(f"\n테스트 완료: 총 {len(analysis_results)}개 파일 처리됨\n")
+        log_file.write("==================================================\n")
+    
+    st.success(f"테스트 결과가 로그 파일에 저장되었습니다: {log_filename}")
+
 # 페이지 설정
 st.set_page_config(page_title="PDF 보장내용 테스트", layout="wide")
 st.title("PDF 보장내용 테스트")
@@ -658,5 +706,8 @@ else:
                     mime="application/vnd.ms-excel"
                 )
                 os.unlink(buffer.name)  # 임시 파일 삭제
+
+                # 로그 기록
+                log_results(analysis_results)
             else:
                 st.info("분석된 결과가 없습니다.")
