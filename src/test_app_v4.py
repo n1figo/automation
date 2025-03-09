@@ -227,12 +227,18 @@ def log_results(analysis_results):
     # 현재 시간
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
+    # 실행 파일 경로 및 파일명 가져오기
+    script_path = os.path.abspath(__file__)
+    script_name = os.path.basename(script_path)
+    
     # 로그 기록 (기존 파일에 추가)
     with open(log_filename, 'a', encoding='utf-8') as log_file:
         log_file.write(f"\n\n===== 테스트 실행: {current_time} =====\n")
+        log_file.write(f"실행 파일: {script_name}\n")
+        log_file.write(f"파일 경로: {script_path}\n\n")
         
         for result in analysis_results:
-            log_file.write(f"\n파일명: {result['파일명']}\n")
+            log_file.write(f"파일명: {result['파일명']}\n")
             log_file.write(f"처리 상태: {result['처리 상태']}\n")
             log_file.write(f"나. 보험금 페이지: {', '.join(map(str, result['나. 보험금 페이지'])) if result['나. 보험금 페이지'] else '없음'}\n")
             
