@@ -403,7 +403,7 @@ def extract_tables_with_camelot(pdf_path, page_num):
 
 # 테이블 셀에 강조색 매핑하는 개선된 함수
 def map_highlights_to_tables(pdf_path, tables, page_num):
-    """테이블 셀에 형광색/취소선 영역 매핑"""
+    """테이블 셀에 형광색/취소선 영역 매핑 - 개선된 버전"""
     try:
         # 문서 열기
         pdf_document = fitz.open(pdf_path)
@@ -417,8 +417,8 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
         # 하이라이트 분석기 초기화
         analyzer = HighlightAnalyzer()
         
-        # 강조색 감지
-        zoom = 2.0
+        # 강조색 감지 - 높은 해상도로 렌더링
+        zoom = 3.0  # 더 높은 해상도로 변경
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
@@ -428,182 +428,118 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
         # 적응형 임계값 계산
         thresholds = analyzer.analyze_document_colors(hsv)
         
-        # 색상 마스크 생성
+        # 색상 마스크 생성 - 노란색 감지 범위 확장
         masks = {}
+        # 노란색 감지 범위 확장
+        analyzer.color_ranges["yellow"]["lower"] = np.array([15, 50, 180])  # 더 넓은 범위로 설정
+        analyzer.color_ranges["yellow"]["upper"] = np.array([45, 255, 255])
+        
         for color_name, ranges in analyzer.color_ranges.items():
             mask = cv2.inRange(hsv, ranges["lower"], ranges["upper"])
-            kernel = np.ones((3, 3), np.uint8)
+            kernel = np.ones((5, 5), np.uint8)  # 커널 크기 증가
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            # 팽창 연산 추가하여 강조색 영역 확장
+            mask = cv2.dilate(mask, kernel, iterations=1)
             masks[color_name] = mask
         
         # 모든 강조색 마스크 통합
         highlight_mask = masks["yellow"] | masks["light_yellow"] | masks["light_blue"] | masks["orange"] | masks["green"] | masks["purple"]
         
-        # 텍스트 위치 정보 추출
-        text_blocks = page.get_text("dict")["blocks"]
-        text_positions = []
-        
-        for block in text_blocks:
-            if "lines" in block:
-                for line in block["lines"]:
-                    for span in line["spans"]:
-                        # 스팬 좌표 (x0, y0, x1, y1)
-                        bbox = span["bbox"]
-                        
-                        # 취소선 확인
-                        has_strikethrough = bool(span.get("flags", 0) & 2**6)
-                        
-                        text_positions.append({
-                            "text": span["text"],
-                            "bbox": bbox,
-                            "has_strikethrough": has_strikethrough
-                        })
-        
-        # 페이지 크기 가져오기
-        page_rect = page.rect
-        
-        # 테이블 영역을 강조색과 취소선 정보와 매핑
+        # 테이블의 셀 정보와 강조색 매핑 - 각 셀마다 처리
         for table_info in tables:
-            # 테이블 내 셀에 강조색 속성 추가
             df = table_info['df']
             rows, cols = df.shape
             
             # 셀별 강조색과 취소선 정보 저장
             highlight_cells = []
             gray_cells = []
+            missing_text_cells = []  # 형광펜으로 가려진 텍스트를 기록
             
-            # 셀 좌표 정보가 있는 경우만 처리
-            if 'cells' in table_info:
-                # 혼합 접근법: 이미지 기반 + 텍스트 위치 기반
-                for r in range(rows):
-                    for c in range(cols):
-                        # 셀 내용
-                        cell_content = df.iloc[r, c] if r < rows and c < cols else ""
-                        
-                        # 셀 좌표 정보 확인
+            # 각 셀의 내용과 좌표 정보 확인
+            for r in range(rows):
+                for c in range(cols):
+                    cell_content = df.iloc[r, c] if r < rows and c < cols else ""
+                    cell_has_highlight = False
+                    
+                    # 셀 좌표 정보 확인 (테이블의 구조에 따라 여러 방법 시도)
+                    cell_coords = None
+                    
+                    # 방법 1: table.cells에서 직접 추출
+                    if 'table' in table_info and hasattr(table_info['table'], 'cells'):
+                        try:
+                            if r < len(table_info['table'].cells) and c < len(table_info['table'].cells[r]):
+                                cell_coords = [
+                                    float(table_info['table'].cells[r][c][0]),
+                                    float(table_info['table'].cells[r][c][1]),
+                                    float(table_info['table'].cells[r][c][2]),
+                                    float(table_info['table'].cells[r][c][3])
+                                ]
+                        except (IndexError, AttributeError):
+                            pass
+                    
+                    # 방법 2: cells 딕셔너리에서 추출
+                    if cell_coords is None and 'cells' in table_info:
                         cell_key = (r, c)
                         if cell_key in table_info['cells'] and 'bbox' in table_info['cells'][cell_key]:
-                            cell_bbox = table_info['cells'][cell_key]['bbox']
-                            
-                            # 이미지 기반 분석 (픽셀 좌표로 변환)
-                            pixel_x0 = int(cell_bbox[0] * zoom)
-                            pixel_y0 = int(cell_bbox[1] * zoom)
-                            pixel_x1 = int(cell_bbox[2] * zoom)
-                            pixel_y1 = int(cell_bbox[3] * zoom)
-                            
-                            # 범위 제한
-                            pixel_x0 = max(0, min(pixel_x0, hsv.shape[1]-1))
-                            pixel_y0 = max(0, min(pixel_y0, hsv.shape[0]-1))
-                            pixel_x1 = max(0, min(pixel_x1, hsv.shape[1]-1))
-                            pixel_y1 = max(0, min(pixel_y1, hsv.shape[0]-1))
-                            
-                            # 셀 영역 내 강조색 픽셀 비율
-                            cell_region_highlight = highlight_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
-                            highlight_ratio = np.sum(cell_region_highlight > 0) / cell_region_highlight.size if cell_region_highlight.size > 0 else 0
-                            
-                            # 셀 영역 내 회색 픽셀 비율
-                            cell_region_gray = masks["gray"][pixel_y0:pixel_y1, pixel_x0:pixel_x1]
-                            gray_ratio = np.sum(cell_region_gray > 0) / cell_region_gray.size if cell_region_gray.size > 0 else 0
-                            
-                            # 텍스트 위치 기반 분석
-                            cell_has_strikethrough = False
-                            cell_text_highlighted = False
-                            
-                            # 해당 셀 영역과 겹치는 텍스트 위치 확인
-                            for pos in text_positions:
-                                text_bbox = pos["bbox"]
-                                
-                                # 셀과 텍스트 영역이 겹치는지 확인
-                                if (cell_bbox[0] <= text_bbox[2] and cell_bbox[2] >= text_bbox[0] and
-                                    cell_bbox[1] <= text_bbox[3] and cell_bbox[3] >= text_bbox[1]):
-                                    
-                                    # 취소선 확인
-                                    if pos["has_strikethrough"]:
-                                        cell_has_strikethrough = True
-                                    
-                                    # 텍스트 영역과 강조색 겹침 확인
-                                    text_pixel_x0 = int(text_bbox[0] * zoom)
-                                    text_pixel_y0 = int(text_bbox[1] * zoom)
-                                    text_pixel_x1 = int(text_bbox[2] * zoom)
-                                    text_pixel_y1 = int(text_bbox[3] * zoom)
-                                    
-                                    # 범위 제한
-                                    text_pixel_x0 = max(0, min(text_pixel_x0, hsv.shape[1]-1))
-                                    text_pixel_y0 = max(0, min(text_pixel_y0, hsv.shape[0]-1))
-                                    text_pixel_x1 = max(0, min(text_pixel_x1, hsv.shape[1]-1))
-                                    text_pixel_y1 = max(0, min(text_pixel_y1, hsv.shape[0]-1))
-                                    
-                                    # 텍스트 영역 내 강조색 확인
-                                    text_region = highlight_mask[text_pixel_y0:text_pixel_y1, text_pixel_x0:text_pixel_x1]
-                                    if text_region.size > 0 and np.sum(text_region > 0) / text_region.size > thresholds["yellow_threshold"]:
-                                        cell_text_highlighted = True
-                            
-                            # 하이브리드 분석 결과 통합
-                            base_threshold = thresholds["base_threshold"]
-                            is_highlighted = highlight_ratio > base_threshold or cell_text_highlighted
-                            is_gray = (gray_ratio > thresholds["gray_threshold"] and cell_has_strikethrough)
-                            
-                            if is_highlighted:
-                                highlight_cells.append((r, c))
-                            if is_gray:
-                                gray_cells.append((r, c))
-            else:
-                # 테이블 영역을 기반으로 셀 좌표 추정
-                if 'coords' in table_info:
-                    table_bbox = table_info['coords']
+                            cell_coords = table_info['cells'][cell_key]['bbox']
                     
-                    # 테이블 내에서의 셀 위치 추정 (각 행과 열의 비율 계산)
-                    for r in range(rows):
-                        for c in range(cols):
-                            # 셀 좌표 추정 (표의 좌표에 비례하여 계산)
-                            cell_x0 = table_bbox[0] + (c / cols) * (table_bbox[2] - table_bbox[0])
-                            cell_y0 = table_bbox[1] + (r / rows) * (table_bbox[3] - table_bbox[1])
-                            cell_x1 = table_bbox[0] + ((c + 1) / cols) * (table_bbox[2] - table_bbox[0])
-                            cell_y1 = table_bbox[1] + ((r + 1) / rows) * (table_bbox[3] - table_bbox[1])
+                    # 방법 3: 테이블 전체 영역에서 상대적 위치 계산
+                    if cell_coords is None and 'coords' in table_info:
+                        x0, y0, x1, y1 = table_info['coords']
+                        cell_width = (x1 - x0) / cols
+                        cell_height = (y1 - y0) / rows
+                        cell_coords = [
+                            x0 + c * cell_width,
+                            y0 + r * cell_height,
+                            x0 + (c + 1) * cell_width,
+                            y0 + (r + 1) * cell_height
+                        ]
+                    
+                    # 셀 좌표가 있으면 강조색 확인
+                    if cell_coords:
+                        # 픽셀 좌표로 변환
+                        pixel_x0 = int(cell_coords[0] * zoom)
+                        pixel_y0 = int(cell_coords[1] * zoom)
+                        pixel_x1 = int(cell_coords[2] * zoom)
+                        pixel_y1 = int(cell_coords[3] * zoom)
+                        
+                        # 범위 제한
+                        pixel_x0 = max(0, min(pixel_x0, hsv.shape[1]-1))
+                        pixel_y0 = max(0, min(pixel_y0, hsv.shape[0]-1))
+                        pixel_x1 = max(0, min(pixel_x1, hsv.shape[1]-1))
+                        pixel_y1 = max(0, min(pixel_y1, hsv.shape[0]-1))
+                        
+                        # 셀 영역 내 강조색 비율 계산
+                        cell_region = highlight_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
+                        if cell_region.size > 0:
+                            highlight_ratio = np.sum(cell_region > 0) / cell_region.size
                             
-                            # 픽셀 좌표로 변환 (스케일 고려)
-                            pixel_x0 = int(cell_x0 * zoom)
-                            pixel_y0 = int(cell_y0 * zoom)
-                            pixel_x1 = int(cell_x1 * zoom)
-                            pixel_y1 = int(cell_y1 * zoom)
-                            
-                            # 범위 제한
-                            pixel_x0 = max(0, min(pixel_x0, highlight_mask.shape[1]-1))
-                            pixel_y0 = max(0, min(pixel_y0, highlight_mask.shape[0]-1))
-                            pixel_x1 = max(0, min(pixel_x1, highlight_mask.shape[1]-1))
-                            pixel_y1 = max(0, min(pixel_y1, highlight_mask.shape[0]-1))
-                            
-                            # 셀 영역 내 노란색 픽셀 비율
-                            cell_region_highlight = highlight_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
-                            highlight_ratio = np.sum(cell_region_highlight > 0) / cell_region_highlight.size if cell_region_highlight.size > 0 else 0
-                            
-                            # 셀 영역 내 회색 픽셀 비율
-                            cell_region_gray = masks["gray"][pixel_y0:pixel_y1, pixel_x0:pixel_x1]
-                            gray_ratio = np.sum(cell_region_gray > 0) / cell_region_gray.size if cell_region_gray.size > 0 else 0
-                            
-                            # 취소선 확인
-                            has_strikethrough = False
-                            for block in page.get_text("dict", clip=(cell_x0, cell_y0, cell_x1, cell_y1))["blocks"]:
-                                if "lines" in block:
-                                    for line in block["lines"]:
-                                        for span in line["spans"]:
-                                            if span.get("flags", 0) & 2**6:  # 취소선 비트
-                                                has_strikethrough = True
-                                                break
-                            
-                            # 임계값 이상이면 해당 셀에 강조색 표시
-                            highlight_threshold = 0.05  # 5% 이상이면 강조색으로 간주
-                            
-                            if highlight_ratio > highlight_threshold:
+                            # 더 낮은 임계값 적용 (5% -> 3%)
+                            if highlight_ratio > 0.03:
                                 highlight_cells.append((r, c))
-                            
-                            # 회색 배경이고 취소선이 있는 경우만 회색으로 표시
-                            if gray_ratio > highlight_threshold and has_strikethrough:
-                                gray_cells.append((r, c))
+                                cell_has_highlight = True
+                                
+                                # 내용이 빈 문자열이고 강조색이 있으면 형광펜으로 가려진 것일 수 있음
+                                if pd.isna(cell_content) or str(cell_content).strip() == '':
+                                    # 해당 셀 위치에서 텍스트 직접 추출 시도
+                                    clip_rect = fitz.Rect(cell_coords[0], cell_coords[1], cell_coords[2], cell_coords[3])
+                                    cell_text = page.get_text("text", clip=clip_rect).strip()
+                                    if cell_text:
+                                        # 원본 텍스트를 찾았으면 데이터프레임 업데이트
+                                        df.iloc[r, c] = cell_text
+                                        missing_text_cells.append((r, c))
+                    
+                    # OCR을 통한 추가 텍스트 복구 (필요시)
+                    if cell_has_highlight and (pd.isna(cell_content) or str(cell_content).strip() == ''):
+                        # 이 부분에 OCR 코드 추가 가능
+                        pass
             
-            # 테이블 정보에 셀 강조 정보 추가
+            # 테이블 정보에 강조 셀 정보와 복원된 텍스트 정보 추가
             table_info['highlight_cells'] = highlight_cells
-            table_info['gray_cells'] = gray_cells
+            table_info['missing_text_cells'] = missing_text_cells
+            
+            # 데이터프레임 업데이트
+            table_info['df'] = df
         
         pdf_document.close()
         return tables
@@ -636,7 +572,7 @@ def process_tables_for_export(pdf_path, page_range):
 
 # 업무정의서 형식으로 엑셀 생성 (개선된 버전)
 def create_business_definition_excel(all_tables, pdf_filename):
-    """테이블 데이터로 업무정의서 형식의 엑셀 생성"""
+    """테이블 데이터로 업무정의서 형식의 엑셀 생성 - 강조색 처리 개선"""
     if not all_tables:
         return None
     
@@ -680,28 +616,19 @@ def create_business_definition_excel(all_tables, pdf_filename):
         df = table_info['df']
         page_num = table_info['page']
         
-        # 강조색 및 취소선 정보
+        # 강조색 및 복원된 텍스트 정보
         highlight_cells = table_info.get('highlight_cells', [])
+        missing_text_cells = table_info.get('missing_text_cells', [])
         gray_cells = table_info.get('gray_cells', [])
         
-        # 데이터프레임 행 수 확인
+        # 데이터프레임 행, 열 수 확인
         rows, cols = df.shape
         
-        # 강조된 셀만 있는 행 또는 모든 행 처리 (강조된 셀이 있는 행은 반드시 포함)
-        processed_rows = set()
-        has_highlights = len(highlight_cells) > 0 or len(gray_cells) > 0
-        
-        if has_highlights:
-            # 강조된 셀이 있는 행만 선택
-            for (r, c) in highlight_cells + gray_cells:
-                if r < rows:
-                    processed_rows.add(r)
-        else:
-            # 강조된 셀이 없으면 모든 행 포함
-            processed_rows = set(range(rows))
-        
-        # 행 처리
-        for df_row_idx in sorted(processed_rows):
+        # 모든 행 포함 (모든 행을 이제 포함하여 형광펜만 있는 행도 표시)
+        for df_row_idx in range(rows):
+            # 해당 행이 강조 처리된 행인지 확인
+            row_has_highlight = any((df_row_idx, c) in highlight_cells for c in range(cols))
+            
             # 셀 값 준비
             row_values = [page_num]  # 첫 번째 열은 페이지 번호
             
@@ -718,10 +645,12 @@ def create_business_definition_excel(all_tables, pdf_filename):
             
             # 강조여부 열 추가
             highlight_status = []
-            if any((df_row_idx, c) in highlight_cells for c in range(cols)):
+            if row_has_highlight:
                 highlight_status.append("강조")
             if any((df_row_idx, c) in gray_cells for c in range(cols)):
                 highlight_status.append("취소선")
+            if any((df_row_idx, c) in missing_text_cells for c in range(cols)):
+                highlight_status.append("형광펜 텍스트 복원")
             
             row_values.append(", ".join(highlight_status) if highlight_status else "")
             
@@ -733,13 +662,15 @@ def create_business_definition_excel(all_tables, pdf_filename):
                 # 강조색 적용 (열이 4개 이상인 경우에도 정확히 반영)
                 df_col = col_idx - 2 if col_idx >= 2 and col_idx <= min(cols+1, 5) else -1
                 
-                if df_col >= 0 and (df_row_idx, df_col) in highlight_cells:
-                    cell.fill = yellow_fill
-                # 회색 적용 (취소선 있는 경우)
-                elif df_col >= 0 and (df_row_idx, df_col) in gray_cells:
-                    cell.fill = gray_fill
-                    # 취소선 텍스트 스타일 적용
-                    if col_idx >= 2 and col_idx <= 5:  # 내용 열에만 적용
+                # 데이터 셀에만 형식 적용
+                if 2 <= col_idx <= 5 and df_col >= 0:
+                    # 강조색 적용
+                    if (df_row_idx, df_col) in highlight_cells:
+                        cell.fill = yellow_fill
+                    # 회색 적용 (취소선 있는 경우)
+                    elif (df_row_idx, df_col) in gray_cells:
+                        cell.fill = gray_fill
+                        # 취소선 텍스트 스타일 적용
                         cell.font = Font(strike=True)
             
             row_idx += 1
