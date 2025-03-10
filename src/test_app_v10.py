@@ -293,9 +293,9 @@ def extract_tables_with_camelot(pdf_path, page_num):
             pdf_path, 
             pages=str(page_num + 1),
             flavor='lattice',
-            line_scale=40,            # 기본값이지만 필요시 조정 가능
-            line_tol=2,               # 가까운 선을 하나로 인식하는 허용치
-            strip_text='\n'           # 셀 내 줄바꿈 제거
+            line_scale=40,            
+            line_tol=2,               
+            strip_text='\n'           
         )
         
         if len(tables) == 0:
@@ -304,8 +304,8 @@ def extract_tables_with_camelot(pdf_path, page_num):
                 pdf_path,
                 pages=str(page_num + 1),
                 flavor='stream',
-                edge_tol=50,          # 테이블 경계 감지 허용 거리
-                row_tol=10            # 행 감지 허용 거리
+                edge_tol=50,          
+                row_tol=10            
             )
         
         if len(tables) == 0:
@@ -315,7 +315,7 @@ def extract_tables_with_camelot(pdf_path, page_num):
         for i in range(len(tables)):
             table = tables[i]
             
-            # 빈 행/열 제거 (applymap 대신 map 사용)
+            # 빈 행/열 제거
             df = table.df.copy()
             
             # 문자열인 경우에만 strip 적용
@@ -332,33 +332,57 @@ def extract_tables_with_camelot(pdf_path, page_num):
                 # 병합된 셀 정보 저장 - 속성이 존재하는지 확인
                 if hasattr(table, 'spanning_cells'):
                     for spanning_cell in table.spanning_cells:
-                        start_row, start_col, end_row, end_col = spanning_cell
-                        for r in range(start_row, end_row + 1):
-                            for c in range(start_col, end_col + 1):
-                                cell_data[(r, c)] = {
-                                    "is_spanning": True,
-                                    "spanning_coords": spanning_cell
-                                }
+                        try:
+                            start_row, start_col, end_row, end_col = spanning_cell
+                            for r in range(start_row, end_row + 1):
+                                for c in range(start_col, end_col + 1):
+                                    cell_data[(r, c)] = {
+                                        "is_spanning": True,
+                                        "spanning_coords": spanning_cell
+                                    }
+                        except ValueError:
+                            continue
                 
                 # 모든 셀 좌표 정보 저장 - 안전하게 처리
                 if hasattr(table, 'cells'):
                     for cell in table.cells:
                         try:
-                            r1, c1, r2, c2 = cell  # 셀 정보에서 4개의 값 추출 시도
-                            
-                            if (r1, c1) not in cell_data:
-                                cell_data[(r1, c1)] = {}
-                            
-                            cell_data[(r1, c1)].update({
-                                "bbox": [
-                                    float(table.cells[r1][c1][0]),
-                                    float(table.cells[r1][c1][1]),
-                                    float(table.cells[r2-1][c2-1][2]),
-                                    float(table.cells[r2-1][c2-1][3])
-                                ]
-                            })
+                            # 셀이 리스트 형태인 경우 특별 처리
+                            if isinstance(cell, list):
+                                for idx, subcell in enumerate(cell):
+                                    if hasattr(subcell, 'x1') and hasattr(subcell, 'y1'):
+                                        # 리스트 내 Cell 객체의 좌표 정보 추출
+                                        row_idx = idx // df.shape[1] if df.shape[1] > 0 else 0
+                                        col_idx = idx % df.shape[1] if df.shape[1] > 0 else 0
+                                        
+                                        if (row_idx, col_idx) not in cell_data:
+                                            cell_data[(row_idx, col_idx)] = {}
+                                        
+                                        cell_data[(row_idx, col_idx)].update({
+                                            "bbox": [
+                                                float(subcell.x1),
+                                                float(subcell.y1),
+                                                float(subcell.x2),
+                                                float(subcell.y2)
+                                            ]
+                                        })
+                            else:
+                                # 기존 코드 유지 (4개 값 언패킹)
+                                r1, c1, r2, c2 = cell
+                                
+                                if (r1, c1) not in cell_data:
+                                    cell_data[(r1, c1)] = {}
+                                
+                                cell_data[(r1, c1)].update({
+                                    "bbox": [
+                                        float(table.cells[r1][c1][0]),
+                                        float(table.cells[r1][c1][1]),
+                                        float(table.cells[r2-1][c2-1][2]),
+                                        float(table.cells[r2-1][c2-1][3])
+                                    ]
+                                })
                         except ValueError:
-                            # 언패킹 오류 발생 시 로그 기록하고 계속 진행
+                            # 4개 값 언패킹 실패 시 경고만 표시하고 계속 진행
                             st.warning(f"셀 정보 처리 중 오류: 예상한 4개 값을 받지 못했습니다 - {cell}")
                             continue
                 
@@ -368,8 +392,8 @@ def extract_tables_with_camelot(pdf_path, page_num):
                     'df': df,
                     'accuracy': table.parsing_report.get('accuracy', 0),
                     'cells': cell_data, 
-                    'table': table,     # 원본 테이블 객체 저장
-                    'coords': table._bbox  # 테이블 영역 좌표 저장
+                    'table': table,
+                    'coords': table._bbox
                 })
         
         return results
