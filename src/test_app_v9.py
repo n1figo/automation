@@ -229,33 +229,45 @@ def detect_highlights_with_opencv(pdf_document, page_num):
 
 # Camelot으로 테이블 추출 함수 추가
 def extract_tables_with_camelot(pdf_path, page_num):
-    """Camelot을 사용하여 테이블 추출"""
+    """Camelot을 사용하여 테이블 추출 - 최적화된 옵션"""
     try:
-        # lattice 모드 시도 (표 테두리가 있는 경우)
-        tables_lattice = camelot.read_pdf(
-            pdf_path,
-            pages=str(page_num),
+        # Camelot 테이블 추출 - lattice 모드 개선
+        tables = camelot.read_pdf(
+            pdf_path, 
+            pages=str(page_num + 1),
             flavor='lattice',
-            process_background=True,
-            line_scale=40
+            # process_background=True,  # 배경 선 처리 향상
+            line_scale=40,            # 기본값이지만 필요시 조정 가능
+            line_tol=2,               # 가까운 선을 하나로 인식하는 허용치
+            strip_text='\n',          # 셀 내 줄바꿈 제거
+            row_tol=10                # 다중 행 텍스트 허용
         )
         
-        # 결과 확인
-        if len(tables_lattice) > 0 and tables_lattice[0].df.size > 0:
-            return tables_lattice
+        if len(tables) == 0:
+            return []
+            
+        results = []
+        for i, table in enumerate(tables):
+            df = table.df
+            
+            # 빈 행/열 제거
+            df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+            df = df.replace('', np.nan)
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            if not df.empty and df.size > 0:
+                results.append({
+                    'page': page_num + 1,
+                    'table_index': i,
+                    'df': df,
+                    'accuracy': table.accuracy,
+                    # 테이블 영역 좌표 저장 (나중에 하이라이트 매핑에 사용)
+                    'coords': table._bbox
+                })
         
-        # lattice 모드가 실패하면 stream 모드 시도
-        tables_stream = camelot.read_pdf(
-            pdf_path,
-            pages=str(page_num),
-            flavor='stream',
-            edge_tol=50,
-            row_tol=10
-        )
-        
-        return tables_stream
+        return results
     except Exception as e:
-        st.warning(f"페이지 {page_num}의 테이블 추출 중 오류 발생: {str(e)}")
+        st.warning(f"페이지 {page_num+1}의 테이블 추출 중 오류 발생: {str(e)}")
         return []
 
 # 확장된 테이블 처리 함수 (보장내용 내려받기 기능용)
