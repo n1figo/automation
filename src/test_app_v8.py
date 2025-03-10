@@ -1030,7 +1030,133 @@ with tab1:
                     progress_bar.progress(progress)
                 
                 status_text.text("모든 PDF 파일 처리가 완료되었습니다.")
-                
+
+                # 자동 테이블 추출 및 Excel 변환
+                st.subheader("테이블 자동 추출 결과")
+
+                # 테이블 저장 폴더 생성
+                tables_folder = os.path.join(input_folder, "extracted_tables")
+                if not os.path.exists(tables_folder):
+                    os.makedirs(tables_folder)
+                    st.info(f"테이블 저장 폴더를 생성했습니다: {tables_folder}")
+
+                # 각 파일별로 테이블 추출 및 엑셀 생성
+                table_results = []
+                for idx, result in enumerate(analysis_results):
+                    file_name = result["파일명"]
+                    file_path = selected_files[idx]
+                    
+                    # 진행 표시
+                    status_placeholder = st.empty()
+                    status_placeholder.info(f"{file_name} 테이블 추출 중...")
+                    
+                    # 파싱 범위 설정
+                    if result["나. 보험금 페이지"]:
+                        parsing_start = result["나. 보험금 페이지"][0] - 1
+                        
+                        # 종료 페이지 설정
+                        if result["상해및질병관련특별약관 종료 페이지"]:
+                            parsing_end = result["상해및질병관련특별약관 종료 페이지"] - 1
+                        else:
+                            with fitz.open(file_path) as doc:
+                                parsing_end = len(doc) - 1
+                    else:
+                        # 파싱 범위가 없는 경우 전체 문서 처리
+                        with fitz.open(file_path) as doc:
+                            parsing_start = 0
+                            parsing_end = len(doc) - 1
+                    
+                    # 테이블 추출
+                    try:
+                        all_tables = process_tables_for_export(file_path, (parsing_start, parsing_end))
+                        
+                        if all_tables:
+                            # 안전한 파일명 생성
+                            base_name = os.path.splitext(file_name)[0]
+                            safe_name = re.sub(r'[^\w\s-]', '', base_name)
+                            excel_filename = f"{safe_name}_테이블_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                            excel_path = os.path.join(tables_folder, excel_filename)
+                            
+                            # 엑셀 파일 생성
+                            excel_output = create_business_definition_excel(all_tables, file_name)
+                            
+                            if excel_output:
+                                # 파일로 저장
+                                with open(excel_path, "wb") as f:
+                                    f.write(excel_output.getvalue())
+                                
+                                table_results.append({
+                                    "file_name": file_name,
+                                    "table_count": len(all_tables),
+                                    "excel_path": excel_path,
+                                    "excel_filename": excel_filename,
+                                    "success": True
+                                })
+                                status_placeholder.success(f"{file_name}: {len(all_tables)}개 테이블 추출 완료")
+                            else:
+                                table_results.append({
+                                    "file_name": file_name,
+                                    "success": False,
+                                    "error": "엑셀 생성 실패"
+                                })
+                                status_placeholder.error(f"{file_name}: 엑셀 생성 실패")
+                        else:
+                            table_results.append({
+                                "file_name": file_name,
+                                "success": False,
+                                "error": "테이블을 찾을 수 없음"
+                            })
+                            status_placeholder.warning(f"{file_name}에서 테이블을 찾을 수 없습니다.")
+                    except Exception as e:
+                        table_results.append({
+                            "file_name": file_name,
+                            "success": False,
+                            "error": str(e)
+                        })
+                        status_placeholder.error(f"{file_name} 처리 중 오류: {str(e)}")
+
+                # 결과 요약 표시
+                st.subheader("테이블 추출 요약")
+                if table_results:
+                    # 테이블 형식으로 추출 결과 표시
+                    table_summary = []
+                    for res in table_results:
+                        if res["success"]:
+                            table_summary.append({
+                                "파일명": res["file_name"],
+                                "테이블 개수": res["table_count"],
+                                "엑셀 파일": res["excel_filename"],
+                                "상태": "성공"
+                            })
+                        else:
+                            table_summary.append({
+                                "파일명": res["file_name"],
+                                "테이블 개수": 0,
+                                "엑셀 파일": "",
+                                "상태": f"실패: {res['error']}"
+                            })
+                    
+                    # 데이터프레임으로 표시
+                    table_df = pd.DataFrame(table_summary)
+                    st.dataframe(table_df, use_container_width=True)
+                    
+                    # 다운로드 버튼 추가
+                    st.subheader("추출된 파일 다운로드")
+                    for res in table_results:
+                        if res["success"]:
+                            with open(res["excel_path"], "rb") as f:
+                                excel_data = f.read()
+                            
+                            st.download_button(
+                                label=f"{res['file_name']} 테이블 다운로드",
+                                data=excel_data,
+                                file_name=res["excel_filename"],
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"auto_dl_{res['file_name']}"
+                            )
+                else:
+                    st.info("추출된 테이블이 없습니다.")
+
                 # 결과 표시
                 if analysis_results:
                     # 결과 표시 함수 호출
