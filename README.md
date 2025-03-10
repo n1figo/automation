@@ -1,5 +1,20 @@
 # Welcome to your Lovable project
 
+pyinstaller --onefile --windowed pdf_analyzer.spec
+
+pdf_analyzer/
+├── main.py           # Tkinter 애플리케이션 코드
+├── analyzer/         # 분석 로직 분리
+│   ├── __init__.py
+│   ├── pdf_parser.py # PDF 파싱 함수
+│   ├── type_finder.py # 종별 찾기 함수
+│   └── highlight_analyzer.py # 강조색 분석 클래스
+├── utils/            # 유틸리티 함수
+│   ├── __init__.py
+│   └── excel_writer.py # Excel 생성 함수
+└── resources/        # 필요한 리소스
+    └── icon.ico      # 애플리케이션 아이콘
+
 ## Project info
 
 **URL**: https://lovable.dev/projects/484f858e-a17d-42a5-97d3-5164c4a5af47
