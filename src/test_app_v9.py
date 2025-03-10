@@ -273,6 +273,143 @@ def extract_tables_with_camelot(pdf_path, page_num):
         st.warning(f"페이지 {page_num+1}의 테이블 추출 중 오류 발생: {str(e)}")
         return []
 
+# 함수 정의 위치 변경
+# extract_tables_with_camelot 함수 바로 다음, process_tables_for_export 함수 이전에 배치
+
+def map_highlights_to_tables(pdf_path, tables, page_num):
+    """테이블 셀에 형광색/취소선 영역 매핑"""
+    try:
+        # 문서 열기
+        pdf_document = fitz.open(pdf_path)
+        page = pdf_document[page_num]
+        
+        # 테이블이 없으면 빈 결과 반환
+        if not tables:
+            pdf_document.close()
+            return []
+        
+        # 강조색 감지
+        zoom = 2.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2HSV)
+        
+        # 노란색 및 기타 색상 감지
+        yellow_lower = np.array([20, 100, 200])
+        yellow_upper = np.array([40, 255, 255])
+        yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
+        
+        # 회색 감지 (취소선이 있는 경우)
+        gray_lower = np.array([0, 0, 80])
+        gray_upper = np.array([180, 40, 200])
+        gray_mask = cv2.inRange(hsv, gray_lower, gray_upper)
+        
+        # 형태학적 연산 (노이즈 제거)
+        kernel = np.ones((3, 3), np.uint8)
+        yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
+        gray_mask = cv2.morphologyEx(gray_mask, cv2.MORPH_OPEN, kernel)
+        
+        # 페이지 크기 가져오기
+        page_rect = page.rect
+        
+        # 테이블 영역을 강조색과 취소선 정보와 매핑
+        for table_info in tables:
+            # 테이블 내 셀에 강조색 속성 추가
+            df = table_info['df']
+            rows, cols = df.shape
+            
+            # 셀별 강조색과 취소선 정보 저장
+            highlight_cells = []
+            gray_cells = []
+            
+            # 테이블 좌표 가져오기
+            if 'coords' in table_info:
+                table_bbox = table_info['coords']
+                
+                # 테이블 내에서의 셀 위치 추정 (각 행과 열의 비율 계산)
+                for row_idx in range(rows):
+                    for col_idx in range(cols):
+                        # 셀 좌표 추정 (표의 좌표에 비례하여 계산)
+                        cell_x0 = table_bbox[0] + (col_idx / cols) * (table_bbox[2] - table_bbox[0])
+                        cell_y0 = table_bbox[1] + (row_idx / rows) * (table_bbox[3] - table_bbox[1])
+                        cell_x1 = table_bbox[0] + ((col_idx + 1) / cols) * (table_bbox[2] - table_bbox[0])
+                        cell_y1 = table_bbox[1] + ((row_idx + 1) / rows) * (table_bbox[3] - table_bbox[1])
+                        
+                        # 픽셀 좌표로 변환 (스케일 고려)
+                        pixel_x0 = int(cell_x0 * zoom)
+                        pixel_y0 = int(cell_y0 * zoom)
+                        pixel_x1 = int(cell_x1 * zoom)
+                        pixel_y1 = int(cell_y1 * zoom)
+                        
+                        # 범위 제한
+                        pixel_x0 = max(0, min(pixel_x0, yellow_mask.shape[1]-1))
+                        pixel_y0 = max(0, min(pixel_y0, yellow_mask.shape[0]-1))
+                        pixel_x1 = max(0, min(pixel_x1, yellow_mask.shape[1]-1))
+                        pixel_y1 = max(0, min(pixel_y1, yellow_mask.shape[0]-1))
+                        
+                        # 셀 영역 내 노란색 픽셀 비율
+                        cell_region_yellow = yellow_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
+                        yellow_ratio = np.sum(cell_region_yellow > 0) / cell_region_yellow.size if cell_region_yellow.size > 0 else 0
+                        
+                        # 셀 영역 내 회색 픽셀 비율
+                        cell_region_gray = gray_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
+                        gray_ratio = np.sum(cell_region_gray > 0) / cell_region_gray.size if cell_region_gray.size > 0 else 0
+                        
+                        # 취소선 확인
+                        has_strikethrough = False
+                        for block in page.get_text("dict", clip=(cell_x0, cell_y0, cell_x1, cell_y1))["blocks"]:
+                            if "lines" in block:
+                                for line in block["lines"]:
+                                    for span in line["spans"]:
+                                        if span.get("flags", 0) & 2**6:  # 취소선 비트
+                                            has_strikethrough = True
+                                            break
+                        
+                        # 임계값 이상이면 해당 셀에 강조색 표시
+                        highlight_threshold = 0.1  # 10% 이상이면 강조색으로 간주
+                        
+                        if yellow_ratio > highlight_threshold:
+                            highlight_cells.append((row_idx, col_idx))
+                        
+                        # 회색 배경이고 취소선이 있는 경우만 회색으로 표시
+                        if gray_ratio > highlight_threshold and has_strikethrough:
+                            gray_cells.append((row_idx, col_idx))
+            
+            # 테이블 정보에 셀 강조 정보 추가
+            table_info['highlight_cells'] = highlight_cells
+            table_info['gray_cells'] = gray_cells
+        
+        pdf_document.close()
+        return tables
+    
+    except Exception as e:
+        st.warning(f"페이지 {page_num+1}의 강조색 매핑 중 오류 발생: {str(e)}")
+        return tables
+
+# 확장된 테이블 처리 함수 (보장내용 내려받기 기능용)
+def process_tables_for_export(pdf_path, page_range):
+    """지정된 페이지 범위에서 테이블을 추출하고 처리"""
+    all_tables = []
+    
+    with st.spinner(f"페이지 {page_range[0]+1}~{page_range[1]+1} 테이블 추출 중..."):
+        for page_num in range(page_range[0], page_range[1] + 1):
+            try:
+                # Camelot으로 테이블 추출
+                tables = extract_tables_with_camelot(pdf_path, page_num)
+                
+                if tables and len(tables) > 0:
+                    # 강조색 및 취소선 정보 매핑
+                    tables = map_highlights_to_tables(pdf_path, tables, page_num)
+                    
+                    all_tables.extend(tables)
+                    st.info(f"페이지 {page_num+1}에서 {len(tables)}개 테이블 발견")
+            except Exception as e:
+                st.warning(f"페이지 {page_num+1} 처리 중 오류: {str(e)}")
+    
+    return all_tables
+
 # 확장된 테이블 처리 함수 (보장내용 내려받기 기능용)
 def process_tables_for_export(pdf_path, page_range):
     """지정된 페이지 범위에서 테이블을 추출하고 처리"""
