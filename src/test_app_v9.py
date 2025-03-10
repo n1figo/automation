@@ -1,8 +1,9 @@
-# test_app_v8.py
+# test_app_v9.py
 # 강조색 부분성공
 # 취소선 - 진한 회색 성공
 # 범위 성공
-# 보완점 : 엑셀파싱 정확도
+# 엑셀파싱 통과
+# 보완 - 엑셀에 강조색 표시
 
 import streamlit as st
 import os
