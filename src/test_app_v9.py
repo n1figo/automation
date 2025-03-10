@@ -6,7 +6,7 @@
 # 보완 - 엑셀에 강조색 표시
 
 import streamlit as st
-import os
+import o시
 import fitz  # PyMuPDF
 import pandas as pd
 import re
