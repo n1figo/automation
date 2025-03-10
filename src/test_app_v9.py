@@ -1457,20 +1457,44 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
         img_rgb = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         hsv = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2HSV)
         
-        # 노란색 및 기타 색상 감지
+        # 다양한 강조색 범위 정의
+        # 1. 일반 노란색 (진한 노란색)
         yellow_lower = np.array([20, 100, 200])
         yellow_upper = np.array([40, 255, 255])
-        yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
         
-        # 회색 감지 (취소선이 있는 경우)
+        # 2. 연한 노란색 (채도 낮고 명도 높음)
+        light_yellow_lower = np.array([20, 30, 200])
+        light_yellow_upper = np.array([40, 100, 255])
+        
+        # 3. 연한 하늘색
+        light_blue_lower = np.array([85, 30, 200])
+        light_blue_upper = np.array([115, 100, 255])
+        
+        # 4. 회색 감지 (취소선이 있는 경우)
         gray_lower = np.array([0, 0, 80])
         gray_upper = np.array([180, 40, 200])
+        
+        # 각 색상 마스크 생성
+        yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
+        light_yellow_mask = cv2.inRange(hsv, light_yellow_lower, light_yellow_upper)
+        light_blue_mask = cv2.inRange(hsv, light_blue_lower, light_blue_upper)
         gray_mask = cv2.inRange(hsv, gray_lower, gray_upper)
         
         # 형태학적 연산 (노이즈 제거)
         kernel = np.ones((3, 3), np.uint8)
         yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
+        light_yellow_mask = cv2.morphologyEx(light_yellow_mask, cv2.MORPH_OPEN, kernel)
+        light_blue_mask = cv2.morphologyEx(light_blue_mask, cv2.MORPH_OPEN, kernel)
         gray_mask = cv2.morphologyEx(gray_mask, cv2.MORPH_OPEN, kernel)
+        
+        # 모든 강조색 마스크 통합 (노란색 + 연한 노란색 + 연한 하늘색)
+        highlight_mask = yellow_mask | light_yellow_mask | light_blue_mask
+        
+        # 디버그용 - 인식된 색상 영역 확인
+        st.info(f"페이지 {page_num+1}의 강조색 인식 결과: " +
+                f"노란색({np.sum(yellow_mask > 0) / yellow_mask.size * 100:.2f}%), " +
+                f"연한 노란색({np.sum(light_yellow_mask > 0) / light_yellow_mask.size * 100:.2f}%), " +
+                f"연한 하늘색({np.sum(light_blue_mask > 0) / light_blue_mask.size * 100:.2f}%)")
         
         # 페이지 크기 가져오기
         page_rect = page.rect
@@ -1499,20 +1523,20 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
                         cell_y1 = table_bbox[1] + ((row_idx + 1) / rows) * (table_bbox[3] - table_bbox[1])
                         
                         # 픽셀 좌표로 변환 (스케일 고려)
-                        pixel_x0 = int(cell_x0 * zoom * page_rect.width / page_rect.width)
-                        pixel_y0 = int(cell_y0 * zoom * page_rect.height / page_rect.height)
-                        pixel_x1 = int(cell_x1 * zoom * page_rect.width / page_rect.width)
-                        pixel_y1 = int(cell_y1 * zoom * page_rect.height / page_rect.height)
+                        pixel_x0 = int(cell_x0 * zoom)
+                        pixel_y0 = int(cell_y0 * zoom)
+                        pixel_x1 = int(cell_x1 * zoom)
+                        pixel_y1 = int(cell_y1 * zoom)
                         
                         # 범위 제한
-                        pixel_x0 = max(0, min(pixel_x0, yellow_mask.shape[1]-1))
-                        pixel_y0 = max(0, min(pixel_y0, yellow_mask.shape[0]-1))
-                        pixel_x1 = max(0, min(pixel_x1, yellow_mask.shape[1]-1))
-                        pixel_y1 = max(0, min(pixel_y1, yellow_mask.shape[0]-1))
+                        pixel_x0 = max(0, min(pixel_x0, hsv.shape[1]-1))
+                        pixel_y0 = max(0, min(pixel_y0, hsv.shape[0]-1))
+                        pixel_x1 = max(0, min(pixel_x1, hsv.shape[1]-1))
+                        pixel_y1 = max(0, min(pixel_y1, hsv.shape[0]-1))
                         
-                        # 셀 영역 내 노란색 픽셀 비율
-                        cell_region_yellow = yellow_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
-                        yellow_ratio = np.sum(cell_region_yellow > 0) / cell_region_yellow.size if cell_region_yellow.size > 0 else 0
+                        # 셀 영역 내 강조색 픽셀 비율
+                        cell_region_highlight = highlight_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
+                        highlight_ratio = np.sum(cell_region_highlight > 0) / cell_region_highlight.size if cell_region_highlight.size > 0 else 0
                         
                         # 셀 영역 내 회색 픽셀 비율
                         cell_region_gray = gray_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
@@ -1529,9 +1553,9 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
                                             break
                         
                         # 임계값 이상이면 해당 셀에 강조색 표시
-                        highlight_threshold = 0.1  # 10% 이상이면 강조색으로 간주
+                        highlight_threshold = 0.05  # 5% 이상이면 강조색으로 간주 (연한 색은 더 낮게 설정)
                         
-                        if yellow_ratio > highlight_threshold:
+                        if highlight_ratio > highlight_threshold:
                             highlight_cells.append((row_idx, col_idx))
                         
                         # 회색 배경이고 취소선이 있는 경우만 회색으로 표시
