@@ -1,3 +1,6 @@
+# 범위성공
+# 강조색 엑셀 성공
+# 보완 : 형광펜 페이지 일부 잘리는 현상
 import streamlit as st
 import os
 import fitz  # PyMuPDF
