@@ -91,3 +91,68 @@ test_app_v8.py
 취소선 - 진한 회색 성공
 범위 성공
 보완점 : 엑셀파싱 정확도
+
+=====
+리서치
+2. Microsoft의 Table Transformer Structure Recognition  
+PubTables1M 데이터셋으로 훈련되었으며, 학술 문서의 복합 표 구조 인식에 효과적입니다.  
+
+원본 모델로, v1.1-all의 개선된 버전입니다.  
+
+URL: Microsoft/table-transformer-structure-recognition
+
+===
+리서치
+좋아요. 복합 테이블을 정확하게 엑셀로 변환하기 위해 Camelot의 최적 파라미터를 추천하고, 대체 가능한 방법들도 검토해볼게요. 
+
+- 복합 테이블에서 줄바꿈 문제를 해결할 수 있는 Camelot의 파라미터 최적화를 살펴보겠습니다.
+- JSON을 중간 단계로 활용하는 것이 더 정확한지 분석하겠습니다.
+- 업무 담당자가 형광펜 친 부분을 엑셀에서 자동으로 노란색으로 표시하는 방법도 제안하겠습니다.
+- Camelot 외에 GPU가 필요하지 않은 대체 솔루션도 추천드릴게요.
+
+조금만 기다려 주세요. 결과가 나오면 바로 알려드릴게요!
+
+# PDF 표 추출 정확도 향상 및 엑셀 하이라이트 처리
+
+## 1. Camelot 정확도 향상을 위한 최적 파라미터 설정
+Camelot의 **lattice** 모드에서 표 인식을 개선하려면 몇 가지 파라미터 튜닝을 고려할 수 있습니다:
+
+- **배경 선 처리**: 표 선이 희미하거나 배경에 묻혀 있는 경우 `process_background=True` 옵션을 사용하세요. 이 설정은 배경에 있는 옅은 선도 검출하여 표 구조 인식에 활용합니다 ([python - How can I stop camelot-py from splitting multi-line text in a single cell into multiple cells? - Stack Overflow](https://stackoverflow.com/questions/61708801/how-can-i-stop-camelot-py-from-splitting-multi-line-text-in-a-single-cell-into-m#:~:text=If%20your%20PDFs%20tables%20have,try%20lattice%20flavour%20with%20process_background%3DTrue)).  
+- **텍스트 줄바꿈 처리**: 셀 내에 여러 줄로 적힌 텍스트가 개별 셀로 분리되는 문제에 대해서는 `strip_text='\n'` 파라미터로 개행 문자를 제거해 보세요. 이렇게 하면 셀 안의 여러 줄 텍스트를 하나로 합칠 수 있습니다 ([python - How can I stop camelot-py from splitting multi-line text in a single cell into multiple cells? - Stack Overflow](https://stackoverflow.com/questions/61708801/how-can-i-stop-camelot-py-from-splitting-multi-line-text-in-a-single-cell-into-m#:~:text=You%20could%20try%20using%20the,following%20parameters)). 또한 `row_tol=10` 정도로 높여주면 여러 줄에 걸친 텍스트를 동일한 행으로 인식하도록 허용해 줄 수 있습니다 ([python - How can I stop camelot-py from splitting multi-line text in a single cell into multiple cells? - Stack Overflow](https://stackoverflow.com/questions/61708801/how-can-i-stop-camelot-py-from-splitting-multi-line-text-in-a-single-cell-into-m#:~:text=You%20could%20try%20using%20the,following%20parameters)). (PDF 특성에 따라 값을 조정해 보세요.)  
+- **미세한 선 결합**: 표의 경계선이 끊겨 있거나 아주 가는 경우 `line_scale`과 `line_tol` 조정을 고려합니다. `line_scale` 값은 검출할 최소 선 길이를 결정하는데, 기본값 40에서 더 키우면 더 작은 선분도 표의 선으로 인식할 수 있습니다 ([API Reference — Camelot 1.0.0 documentation](https://camelot-py.readthedocs.io/en/master/api.html#:~:text=,text%20being%20detected%20as%20lines)). `line_tol`은 가까이 있는 선분들을 하나로 합치는 허용치로, 이 값을 올리면 끊어진 선분도 연속된 선으로 간주하게 되어 셀이 분리되지 않도록 도와줍니다 ([API Reference — Camelot 1.0.0 documentation](https://camelot-py.readthedocs.io/en/master/api.html#:~:text=,close%20vertical%20and%20horizontal%20lines)). (너무 크게 하면 오류 검출이 생길 수 있으니 주의하세요.)  
+- **그 외**: 경계선이 아예 없는 **borderless** 표의 경우 부득이 **stream** 모드를 써야 합니다. 이때는 추출 영역(`table_regions`)이나 열의 x좌표(`columns`)를 수동 지정하면 정확도를 높일 수 있고, 앞서 언급한 `row_tol` 등을 함께 조정하여 Camelot이 줄바꿈을 새 행으로 착각하지 않도록 해야 합니다.
+
+위 설정들을 조합하여 사용하면 Camelot 추출의 정확도를 높이고, 한 셀의 여러 줄 내용이 분리되는 현상을 줄일 수 있습니다.
+
+## 2. JSON 중간 단계 활용의 정확도 영향
+Camelot에서 추출한 표를 **JSON으로 일단 저장**한 뒤 이를 다시 엑셀로 변환하는 방식을 고려하시는 듯합니다. 결론부터 말하면, **JSON 형식으로 한 번 거친다고 해서 추출 자체의 정확도가 크게 향상되지는 않습니다.** Camelot은 추출 단계에서 이미 표 구조를 식별하며, JSON은 단지 출력 포맷 중 하나일 뿐입니다 ([[PDF] Camelot Documentation - Read the Docs](https://readthedocs.org/projects/camelot-py/downloads/pdf/master/#:~:text=%5BPDF%5D%20Camelot%20Documentation%20,See%20comparison%20with%20similar)). 즉, Camelot으로 추출한 데이터를 CSV나 Excel로 바로 내보내든 JSON으로 거쳐가든 **기본 추출 결과는 동일**합니다.
+
+다만 JSON을 중간 단계로 활용하면 **추출 후 후처리**에 유용할 수는 있습니다. 예를 들어 Camelot이 추출한 표를 JSON으로 받아서:
+- 셀 좌표나 내용 구조를 파악하기 쉽고,
+- 여러 셀로 쪼개진 텍스트 조각들을 프로그램으로 합치는 등의 **커스터마이징 작업**을 수행한 뒤, 
+- 그 결과를 Excel로 변환하면 
+
+원하는 형식으로 데이터를 조정할 수 있습니다. 하지만 이때 향상되는 것은 어디까지나 **후처리로 인한 개선**이며, Camelot 엔진의 본래 인식률이 올라가는 것은 아닙니다.
+
+요약하면, JSON은 **정확도 향상보다는 데이터 가공 용이성** 측면에서 유용하며, 정확도를 높이려면 앞서 언급한 Camelot 파라미터 튜닝에 집중하는 것이 좋습니다.
+
+## 3. 엑셀에서 형광펜 표시 부분 자동 강조
+PDF에서 업무 담당자가 **형광펜으로 강조한 부분**을 식별하여, 변환된 Excel에서도 **자동으로 노란색 하이라이트**하는 방법은 다음과 같습니다:
+
+1. **PDF에서 형광펜 표시된 텍스트 추출**: PyMuPDF 같은 PDF 처리 라이브러리를 사용하면 PDF에 포함된 **주석(annotation)** 정보를 읽어올 수 있습니다. 형광펜으로 표시한 부분은 일반적으로 `"Highlight"` 타입의 주석으로 저장되므로, PyMuPDF로 각 페이지의 주석을 훑어 이 타입을 찾아냅니다 ([Extract Highlighted Data from PDF using Python – Example CIS Windows Server 2022 Benchmark pdf | AskAresh](https://askaresh.com/2023/07/10/extract-highlighted-data-from-pdf-using-python-example-cis-windows-server-2022-benchmark-pdf/#:~:text=page%20%3D%20doc%5Bi%5D%20,add%28color)). 그런 다음 해당 주석의 좌표 영역에 겹치는 텍스트를 추출할 수 있습니다 (예: 주석의 사각영역과 겹치는 텍스트 스팬을 수집) ([Extract Highlighted Data from PDF using Python – Example CIS Windows Server 2022 Benchmark pdf | AskAresh](https://askaresh.com/2023/07/10/extract-highlighted-data-from-pdf-using-python-example-cis-windows-server-2022-benchmark-pdf/#:~:text=,text)). 이렇게 하면 PDF에서 강조 표시된 텍스트 내용과 그 위치 정보를 얻을 수 있습니다.  
+2. **추출된 텍스트를 Excel 셀과 매칭**: 1에서 얻은 강조 텍스트들을 Camelot으로 추출한 표 데이터와 대조합니다. 예를 들어 Camelot 결과 데이터프레임에서 해당 텍스트와 일치하는 셀을 찾거나, 또는 좌표를 이용해 어느 셀에 해당하는지 매핑합니다. 추출된 텍스트가 고유하다면 문자열 매칭으로 셀을 찾을 수 있고, 여러 곳에 있을 수 있는 값이라면 페이지나 위치 정보를 함께 활용합니다.  
+3. **Excel 셀에 노란색 배경 적용**: 매칭된 셀에 대해 Python의 Excel 처리 라이브러리 (openpyxl 등)을 사용하여 **배경 색을 채우는** 작업을 합니다. openpyxl에서는 `PatternFill` 등을 이용해 셀 색상을 변경할 수 있습니다. 예를 들어 `sheet['A1'].fill = PatternFill(start_color='FFFF00', fill_type='solid')`처럼 설정하면 해당 셀에 노란색 배경을 채울 수 있습니다 ([python - Adding a background color to Cell OpenPyXL - Stack Overflow](https://stackoverflow.com/questions/35918504/adding-a-background-color-to-cell-openpyxl#:~:text=from%20openpyxl.styles%20import%20PatternFill%20sheet,solid)). 이렇게 코드를 통해 PDF에서 형광펜 친 부분과 동일한 셀을 찾아 자동으로 노란색으로 강조 표시하게 할 수 있습니다.
+
+> **참고:** PDF에서 부분적으로 텍스트에만 형광펜이 그어져 있었다면 Excel에서는 셀 단위로 강조되기 때문에 셀 전체를 노란색으로 칠하게 됩니다. 필요하다면 Excel의 Rich Text 기능으로 셀 안의 일부 텍스트만 색을 바꾸는 것도 가능은 있으나(openpyxl에서는 복잡한 작업), 대부분의 경우 셀 단위 강조로도 충분합니다.
+
+## 4. GPU 없이 사용 가능한 대체 도구
+Camelot 이외에 고려할 만한 **PDF 표 추출 대안**으로 다음 방법들이 있습니다 (모두 GPU 없이 CPU 환경에서 실행 가능):
+
+- **Tabula-Py**: Camelot과 비슷한 기능을 하는 Java 기반 오픈소스 도구인 Tabula의 Python 래퍼입니다. Java 환경만 준비되면 `tabula-py`를 통해 PDF 표를 DataFrame으로 가져올 수 있습니다 ([python - How can I extract tables as structured data from PDF documents? - Stack Overflow](https://stackoverflow.com/questions/17591426/how-can-i-extract-tables-as-structured-data-from-pdf-documents#:~:text=tabula%20can%20be%20installed%20via)). 설치 시 Java가 필요하므로, Java 설치 후 `pip install tabula-py`로 사용하세요 ([python - How can I extract tables as structured data from PDF documents? - Stack Overflow](https://stackoverflow.com/questions/17591426/how-can-i-extract-tables-as-structured-data-from-pdf-documents#:~:text=tabula%20can%20be%20installed%20via)). Tabula도 Camelot **stream** 방식과 유사하게 동작하므로 테이블에 선이 없을 때 유용합니다.  
+- **pdfplumber**: 순수 Python으로 PDF의 텍스트와 도형 정보를 추출할 수 있는 라이브러리입니다. 표 구조를 바로 제공하진 않지만 세밀한 제어가 가능합니다. 복잡한 테이블도 좌표 계산을 통해 추출할 수 있으며, 기본 제공 함수인 `page.extract_table()`가 단순 표는 추출해 줍니다 ([python - How can I extract tables as structured data from PDF documents? - Stack Overflow](https://stackoverflow.com/questions/17591426/how-can-i-extract-tables-as-structured-data-from-pdf-documents#:~:text=import%20pdfplumber)). 특히 **중첩된 테이블이나 복잡한 레이아웃**도 상세 좌표 데이터를 이용해 커스터마이징하면 처리할 수 있어 유연성이 높습니다 ([Python Libraries to Extract Tables From PDF: A Comparison](https://unstract.com/blog/extract-tables-from-pdf-python/#:~:text=Pdfplumber%20is%20a%20versatile%20library,Key%20features%20of%20Pdfplumber%20include)). 다만 자동화 수준은 Camelot/Tabula보다 낮아 추가 코드 작업이 필요합니다.  
+- **GMFT (Table Transformer)**: 최근 등장한 딥러닝 기반 **Table Transformer** 모델을 활용한 도구로, PDF의 테이블을 구조적으로 인식해 줍니다. `pip install gmft`로 설치할 수 있으며, PyTorch와 Transformers를 이용하지만 **CPU만으로도 동작**하도록 설계되었습니다 ([GitHub - conjuncts/gmft: Lightweight, performant, deep table extraction](https://github.com/conjuncts/gmft#:~:text=Because%20of%20the%20few%20dependencies%2C,gmft%20to%20run%20on%20cpu)). PubTables-1M 데이터셋으로 학습된 모델을 사용하여 복잡한 표도 높은 정확도로 추출하는 것으로 알려져 있습니다. 다만 모델 가중치를 처음 다운로드해야 하고, 크기가 수백 MB급일 수 있으니 초기 세팅에 유의하세요.  
+- **클라우드 API 서비스**: 설치형 도구로 어려움이 있을 경우, Amazon Textract 같은 상용 API도 고려할 수 있습니다. Textract는 PDF에서 표를 추출하면서 **병합셀**이나 **컬럼 헤더**까지 인식할 정도로 강력한 엔진을 제공합니다 ([python - How can I extract tables as structured data from PDF documents? - Stack Overflow](https://stackoverflow.com/questions/17591426/how-can-i-extract-tables-as-structured-data-from-pdf-documents#:~:text=AWS%20Textract)). 마찬가지로 Google Cloud Vision API, Azure Form Recognizer 등도 유사한 기능이 있습니다. 이들 서비스는 별도 비용이 들지만 정확도가 높고, 복잡한 테이블을 구조화하는 데 특화되어 있습니다.  
+- **Excel Power Query 활용** (코드 불필요): 만약 최신 Excel을 사용 중이라면, Excel의 **데이터 가져오기** 기능으로 PDF를 불러오는 방법도 있습니다. *데이터 > 가져오기 > 파일에서 > PDF에서* 기능을 쓰면 PDF 내 표를 자동으로 찾아 엑셀 시트로 불러오며, 셀 병합 등도 일정 수준 처리해줍니다. 다만 이 방식은 PDF의 표가 여러 페이지에 걸쳐 있을 경우 각각을 별개 표로 인식하는 등 한계가 있습니다 ([Excel "Get Data" from PDF using table that extends over multiple ...](https://answers.microsoft.com/en-us/msoffice/forum/all/excel-get-data-from-pdf-using-table-that-extends/a3008470-e1da-40fd-947d-919a8a922ea2#:~:text=Excel%20,identified%20as%20three%20separate%20tables)).  
+
+각 대안에는 장단점이 있으므로, **PDF 파일의 특성**(테이블에 선 존재 여부, 복잡도, 보안 정책 등)과 **개발 환경**(예: Java 사용 가능 여부, 외부 API 사용 가능 여부)에 맞춰 선택하시는 것이 좋습니다. 필요한 경우 상기 방법들을 조합하여 활용하면 원하는 정확도와 자동화를 달성할 수 있을 것입니다.
+
