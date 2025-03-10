@@ -403,7 +403,7 @@ def extract_tables_with_camelot(pdf_path, page_num):
 
 # 테이블 셀에 강조색 매핑하는 개선된 함수
 def map_highlights_to_tables(pdf_path, tables, page_num):
-    """테이블 셀에 형광색/취소선 영역 매핑 - 개선된 버전"""
+    """테이블 셀에 형광색/취소선 영역 매핑 - 수정된 버전"""
     try:
         # 문서 열기
         pdf_document = fitz.open(pdf_path)
@@ -418,7 +418,7 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
         analyzer = HighlightAnalyzer()
         
         # 강조색 감지 - 높은 해상도로 렌더링
-        zoom = 3.0  # 더 높은 해상도로 변경
+        zoom = 3.0
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
@@ -431,21 +431,20 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
         # 색상 마스크 생성 - 노란색 감지 범위 확장
         masks = {}
         # 노란색 감지 범위 확장
-        analyzer.color_ranges["yellow"]["lower"] = np.array([15, 50, 180])  # 더 넓은 범위로 설정
+        analyzer.color_ranges["yellow"]["lower"] = np.array([15, 50, 180])
         analyzer.color_ranges["yellow"]["upper"] = np.array([45, 255, 255])
         
         for color_name, ranges in analyzer.color_ranges.items():
             mask = cv2.inRange(hsv, ranges["lower"], ranges["upper"])
-            kernel = np.ones((5, 5), np.uint8)  # 커널 크기 증가
+            kernel = np.ones((5, 5), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            # 팽창 연산 추가하여 강조색 영역 확장
             mask = cv2.dilate(mask, kernel, iterations=1)
             masks[color_name] = mask
         
         # 모든 강조색 마스크 통합
         highlight_mask = masks["yellow"] | masks["light_yellow"] | masks["light_blue"] | masks["orange"] | masks["green"] | masks["purple"]
         
-        # 테이블의 셀 정보와 강조색 매핑 - 각 셀마다 처리
+        # 테이블의 셀 정보와 강조색 매핑
         for table_info in tables:
             df = table_info['df']
             rows, cols = df.shape
@@ -453,7 +452,7 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
             # 셀별 강조색과 취소선 정보 저장
             highlight_cells = []
             gray_cells = []
-            missing_text_cells = []  # 형광펜으로 가려진 텍스트를 기록
+            missing_text_cells = []
             
             # 각 셀의 내용과 좌표 정보 확인
             for r in range(rows):
@@ -461,39 +460,49 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
                     cell_content = df.iloc[r, c] if r < rows and c < cols else ""
                     cell_has_highlight = False
                     
-                    # 셀 좌표 정보 확인 (테이블의 구조에 따라 여러 방법 시도)
+                    # 셀 영역 좌표 (안전하게 추출)
                     cell_coords = None
                     
-                    # 방법 1: table.cells에서 직접 추출
-                    if 'table' in table_info and hasattr(table_info['table'], 'cells'):
-                        try:
-                            if r < len(table_info['table'].cells) and c < len(table_info['table'].cells[r]):
-                                cell_coords = [
-                                    float(table_info['table'].cells[r][c][0]),
-                                    float(table_info['table'].cells[r][c][1]),
-                                    float(table_info['table'].cells[r][c][2]),
-                                    float(table_info['table'].cells[r][c][3])
-                                ]
-                        except (IndexError, AttributeError):
-                            pass
-                    
-                    # 방법 2: cells 딕셔너리에서 추출
-                    if cell_coords is None and 'cells' in table_info:
+                    # 방법 1: cells 딕셔너리에서 추출 (가장 안전한 방법)
+                    if 'cells' in table_info:
                         cell_key = (r, c)
                         if cell_key in table_info['cells'] and 'bbox' in table_info['cells'][cell_key]:
                             cell_coords = table_info['cells'][cell_key]['bbox']
                     
-                    # 방법 3: 테이블 전체 영역에서 상대적 위치 계산
+                    # 방법 2: 테이블 좌표에서 계산 (cells 정보가 없는 경우)
                     if cell_coords is None and 'coords' in table_info:
                         x0, y0, x1, y1 = table_info['coords']
-                        cell_width = (x1 - x0) / cols
-                        cell_height = (y1 - y0) / rows
+                        cell_width = (x1 - x0) / cols if cols > 0 else 0
+                        cell_height = (y1 - y0) / rows if rows > 0 else 0
                         cell_coords = [
                             x0 + c * cell_width,
                             y0 + r * cell_height,
                             x0 + (c + 1) * cell_width,
                             y0 + (r + 1) * cell_height
                         ]
+                    
+                    # 방법 3: table 객체에서 직접 추출 시도 (조심해서 사용)
+                    if cell_coords is None and 'table' in table_info:
+                        try:
+                            cells_attr = getattr(table_info['table'], 'cells', None)
+                            if cells_attr and isinstance(cells_attr, list) and r < len(cells_attr):
+                                if isinstance(cells_attr[r], list) and c < len(cells_attr[r]):
+                                    cell_obj = cells_attr[r][c]
+                                    # 객체 타입에 따라 다르게 처리
+                                    if hasattr(cell_obj, 'x1') and hasattr(cell_obj, 'y1'):
+                                        # Cell 객체인 경우 속성으로 접근
+                                        cell_coords = [
+                                            float(cell_obj.x1),
+                                            float(cell_obj.y1),
+                                            float(cell_obj.x2),
+                                            float(cell_obj.y2)
+                                        ]
+                                    elif isinstance(cell_obj, (list, tuple)) and len(cell_obj) >= 4:
+                                        # 좌표 리스트/튜플인 경우
+                                        cell_coords = [float(v) for v in cell_obj[:4]]
+                        except (IndexError, AttributeError, TypeError) as e:
+                            # 오류 발생 시 무시하고 계속 진행
+                            continue
                     
                     # 셀 좌표가 있으면 강조색 확인
                     if cell_coords:
@@ -510,42 +519,37 @@ def map_highlights_to_tables(pdf_path, tables, page_num):
                         pixel_y1 = max(0, min(pixel_y1, hsv.shape[0]-1))
                         
                         # 셀 영역 내 강조색 비율 계산
-                        cell_region = highlight_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
-                        if cell_region.size > 0:
-                            highlight_ratio = np.sum(cell_region > 0) / cell_region.size
-                            
-                            # 더 낮은 임계값 적용 (5% -> 3%)
-                            if highlight_ratio > 0.03:
-                                highlight_cells.append((r, c))
-                                cell_has_highlight = True
+                        if pixel_y1 > pixel_y0 and pixel_x1 > pixel_x0:  # 유효한 영역인지 확인
+                            cell_region = highlight_mask[pixel_y0:pixel_y1, pixel_x0:pixel_x1]
+                            if cell_region.size > 0:
+                                highlight_ratio = np.sum(cell_region > 0) / cell_region.size
                                 
-                                # 내용이 빈 문자열이고 강조색이 있으면 형광펜으로 가려진 것일 수 있음
-                                if pd.isna(cell_content) or str(cell_content).strip() == '':
-                                    # 해당 셀 위치에서 텍스트 직접 추출 시도
-                                    clip_rect = fitz.Rect(cell_coords[0], cell_coords[1], cell_coords[2], cell_coords[3])
-                                    cell_text = page.get_text("text", clip=clip_rect).strip()
-                                    if cell_text:
-                                        # 원본 텍스트를 찾았으면 데이터프레임 업데이트
-                                        df.iloc[r, c] = cell_text
-                                        missing_text_cells.append((r, c))
-                    
-                    # OCR을 통한 추가 텍스트 복구 (필요시)
-                    if cell_has_highlight and (pd.isna(cell_content) or str(cell_content).strip() == ''):
-                        # 이 부분에 OCR 코드 추가 가능
-                        pass
+                                # 더 낮은 임계값 적용 (3%)
+                                if highlight_ratio > 0.03:
+                                    highlight_cells.append((r, c))
+                                    cell_has_highlight = True
+                                    
+                                    # 내용이 비어있고 강조색이 있으면 텍스트 복원 시도
+                                    if pd.isna(cell_content) or str(cell_content).strip() == '':
+                                        # PDF 원본에서 직접 텍스트 추출
+                                        clip_rect = fitz.Rect(cell_coords[0], cell_coords[1], cell_coords[2], cell_coords[3])
+                                        cell_text = page.get_text("text", clip=clip_rect).strip()
+                                        if cell_text:
+                                            df.iloc[r, c] = cell_text
+                                            missing_text_cells.append((r, c))
             
             # 테이블 정보에 강조 셀 정보와 복원된 텍스트 정보 추가
             table_info['highlight_cells'] = highlight_cells
+            table_info['gray_cells'] = gray_cells
             table_info['missing_text_cells'] = missing_text_cells
-            
-            # 데이터프레임 업데이트
-            table_info['df'] = df
+            table_info['df'] = df  # 업데이트된 데이터프레임 저장
         
         pdf_document.close()
         return tables
-    
+        
     except Exception as e:
         st.warning(f"페이지 {page_num+1}의 강조색 매핑 중 오류 발생: {str(e)}")
+        # 오류 발생해도, 테이블은 반환하여 계속 진행할 수 있도록 함
         return tables
 
 # 확장된 테이블 처리 함수 (보장내용 내려받기 기능용)
