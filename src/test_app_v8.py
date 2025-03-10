@@ -1,3 +1,9 @@
+# test_app_v8.py
+# 강조색 부분성공
+# 취소선 - 진한 회색 성공
+# 범위 성공
+# 보완점 : 엑셀파싱 정확도
+
 import streamlit as st
 import os
 import fitz  # PyMuPDF
