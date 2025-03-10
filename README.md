@@ -1,3 +1,16 @@
+PDF보험약관분석기 설치 안내
+
+1. 압축 파일 내용을 원하는 위치에 압축 해제합니다.
+2. setup.bat 파일을 더블클릭하여 실행합니다.
+3. 설치가 완료되면 바탕화면에 바로가기가 생성됩니다.
+4. 바로가기를 더블클릭하여 프로그램을 실행합니다.
+
+※ 주의사항
+- 관리자 권한이 필요할 수 있습니다.
+- 설치 중 Ghostscript가 자동으로 설치됩니다.
+- 설치 오류 발생 시 수동으로 gs1000w64.exe를 실행하여 Ghostscript를 설치하세요.
+
+
 # Welcome to your Lovable project
 
 pyinstaller --onefile --windowed pdf_analyzer.spec
