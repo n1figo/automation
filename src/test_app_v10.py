@@ -329,30 +329,32 @@ def extract_tables_with_camelot(pdf_path, page_num):
                 # 셀 정보 저장
                 cell_data = {}
                 
-                # 병합된 셀 정보 저장
-                for spanning_cell in table.spanning_cells:
-                    start_row, start_col, end_row, end_col = spanning_cell
-                    for r in range(start_row, end_row + 1):
-                        for c in range(start_col, end_col + 1):
-                            cell_data[(r, c)] = {
-                                "is_spanning": True,
-                                "spanning_coords": spanning_cell
-                            }
+                # 병합된 셀 정보 저장 - 속성이 존재하는지 확인
+                if hasattr(table, 'spanning_cells'):
+                    for spanning_cell in table.spanning_cells:
+                        start_row, start_col, end_row, end_col = spanning_cell
+                        for r in range(start_row, end_row + 1):
+                            for c in range(start_col, end_col + 1):
+                                cell_data[(r, c)] = {
+                                    "is_spanning": True,
+                                    "spanning_coords": spanning_cell
+                                }
                 
-                # 모든 셀 좌표 정보 저장
-                for cell in table.cells:
-                    r1, c1, r2, c2 = cell
-                    if (r1, c1) not in cell_data:
-                        cell_data[(r1, c1)] = {}
-                    
-                    cell_data[(r1, c1)].update({
-                        "bbox": [
-                            float(table.cells[r1][c1][0]),
-                            float(table.cells[r1][c1][1]),
-                            float(table.cells[r2-1][c2-1][2]),
-                            float(table.cells[r2-1][c2-1][3])
-                        ]
-                    })
+                # 모든 셀 좌표 정보 저장 
+                if hasattr(table, 'cells'):
+                    for cell in table.cells:
+                        r1, c1, r2, c2 = cell
+                        if (r1, c1) not in cell_data:
+                            cell_data[(r1, c1)] = {}
+                        
+                        cell_data[(r1, c1)].update({
+                            "bbox": [
+                                float(table.cells[r1][c1][0]),
+                                float(table.cells[r1][c1][1]),
+                                float(table.cells[r2-1][c2-1][2]),
+                                float(table.cells[r2-1][c2-1][3])
+                            ]
+                        })
                 
                 results.append({
                     'page': page_num + 1,
