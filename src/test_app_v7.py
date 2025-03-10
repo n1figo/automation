@@ -1038,18 +1038,22 @@ with tab1:
                     
                     # "보장내용 개정사항 내려받기" 버튼 추가
                     st.subheader("보장내용 개정사항 내려받기")
-                    
+
                     # 파일별로 버튼 생성
                     for idx, result in enumerate(analysis_results):
                         file_name = result["파일명"]
                         file_path = selected_files[idx]  # 해당 인덱스의 파일 경로
+                        
+                        # 세션 상태 키 정의
+                        extract_key = f"extracted_{idx}"
+                        excel_key = f"excel_{idx}"
                         
                         # 파싱 범위 확인
                         parsing_range = None
                         
                         # "나. 보험금" 페이지 사용
                         if result["나. 보험금 페이지"]:
-                            parsing_start = result["나. 보험금 페이지"][0] - 1  # 페이지 번호를 인덱스로 변환
+                            parsing_start = result["나. 보험금 페이지"][0] - 1
                             
                             # 종료 페이지 설정
                             parsing_end = None
@@ -1062,7 +1066,6 @@ with tab1:
                             parsing_range = [parsing_start, parsing_end]
                         
                         if parsing_range:
-                            # 사용자가 다양한 형식의 파일명을 선택할 수 있도록 col1, col2로 나눠서 구성
                             col1, col2 = st.columns([3, 1])
                             
                             with col1:
@@ -1070,31 +1073,47 @@ with tab1:
                                 st.write(f"파싱 범위: {parsing_range[0]+1}~{parsing_range[1]+1}페이지")
                             
                             with col2:
-                                # 버튼 클릭 시 테이블 추출 및 엑셀 생성
-                                if st.button(f"내려받기", key=f"download_{idx}"):
-                                    with st.spinner(f"{file_name} 테이블 추출 중..."):
-                                        # 테이블 추출
-                                        all_tables = process_tables_for_export(file_path, (parsing_range[0], parsing_range[1]))
-                                        
-                                        if all_tables:
-                                            # 엑셀 생성
-                                            excel_output = create_business_definition_excel(all_tables, file_name)
+                                # 세션 상태 초기화
+                                if extract_key not in st.session_state:
+                                    st.session_state[extract_key] = False
+                                    st.session_state[excel_key] = None
+                                
+                                # 추출이 완료되지 않았거나 엑셀이 준비되지 않은 경우에만 버튼 표시
+                                if not st.session_state[extract_key]:
+                                    if st.button(f"내려받기", key=f"download_{idx}"):
+                                        with st.spinner(f"{file_name} 테이블 추출 중..."):
+                                            # 테이블 추출
+                                            all_tables = process_tables_for_export(file_path, (parsing_range[0], parsing_range[1]))
                                             
-                                            if excel_output:
-                                                # 다운로드 버튼 제공
-                                                excel_filename = f"{os.path.splitext(file_name)[0]}_보장내용개정사항_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                                                st.download_button(
-                                                    label=f"{file_name} 엑셀 다운로드",
-                                                    data=excel_output,
-                                                    file_name=excel_filename,
-                                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                                    key=f"excel_{idx}"
-                                                )
-                                                st.success(f"{file_name} 테이블 추출 및 엑셀 생성 완료")
+                                            if all_tables:
+                                                # 엑셀 생성
+                                                excel_output = create_business_definition_excel(all_tables, file_name)
+                                                
+                                                if excel_output:
+                                                    # 세션 상태에 저장
+                                                    st.session_state[extract_key] = True
+                                                    st.session_state[excel_key] = excel_output
+                                                    st.experimental_rerun()  # 페이지 다시 실행
+                                                else:
+                                                    st.error(f"{file_name} 엑셀 생성 실패")
                                             else:
-                                                st.error(f"{file_name} 엑셀 생성 실패")
-                                        else:
-                                            st.warning(f"{file_name}에서 테이블을 찾을 수 없습니다.")
+                                                st.warning(f"{file_name}에서 테이블을 찾을 수 없습니다.")
+                                
+                                # 추출이 완료되고 엑셀이 준비된 경우 다운로드 버튼 표시
+                                else:
+                                    excel_filename = f"{os.path.splitext(file_name)[0]}_보장내용개정사항_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                                    st.download_button(
+                                        label=f"엑셀 다운로드",
+                                        data=st.session_state[excel_key],
+                                        file_name=excel_filename,
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key=f"download_excel_{idx}"
+                                    )
+                                    # 다시 추출할 수 있는 버튼 추가
+                                    if st.button("다시 추출", key=f"reset_{idx}"):
+                                        st.session_state[extract_key] = False
+                                        st.session_state[excel_key] = None
+                                        st.experimental_rerun()
                     
                     # 결과 저장
                     output_dir, timestamp = save_analysis_results(analysis_results)
